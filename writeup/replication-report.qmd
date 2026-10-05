@@ -1,6 +1,6 @@
 ---
-title: "Replication of Problems 1 and 2 of Tversky & Kahneman (1981, *Science*)"
-author: "Your Name (your.email@stanford.edu)"
+title: "Replication of Experiment 1 of Jara-Ettinger & Rubio-Fernandez (2021, *Science Advances*)"
+author: "Tarun Sepuri (tsepuri@stanford.edu)"
 date: today
 date-format: long
 format:
@@ -75,37 +75,17 @@ original_p_loss <- original$risky[original$condition == "loss"] / original$n[ori
 ::: {.callout-note appearance="simple" icon=false}
 ## Project links
 
-- **Original paper:** Tversky, A., & Kahneman, D. (1981). The framing of decisions and the
-  psychology of choice. *Science, 211*(4481), 453–458. <https://doi.org/10.1126/science.7455683>
+- **Original paper:** Jara-Ettinger, J., & Rubio-Fernandez, P. (2021). Quantitative mental state attributions in language understanding. Science advances, 7(47), eabj0970. <https://doi.org/10.1126/sciadv.abj0970>
 - **Preregistration:** [OSF registration](https://osf.io/XXXXX) *(registered YYYY-MM-DD, before final data collection)*
 - **Live experiment:** <https://psych251.github.io/your-repo/> (take the study exactly as participants did)
-- **Repository:** <https://github.com/psych251/your-repo> (experiment code, data, and this report)
+- **Repository:** <https://github.com/psych251/jara-ettinger2021> (experiment code, data, and this report)
 :::
 
 # AI use statement
 
-::: {.callout-tip icon=false}
-## Guidance
-
-This statement comes first so a reader knows how the work was produced before reading it. Keep
-it current from the start of the project rather than reconstructing it at the end.
-
-**Course policy: you write all of the text in this report yourself.** AI tools may help with
-code, and may comment on drafts you have written, but they may not write, rewrite or paraphrase
-any of the report's text. That includes "polishing" a paragraph.
-
-List every AI tool you used on this project, what you used it for, and how you checked what it
-produced. Include coding assistants (for example Claude Code, Codex, Copilot) and chat
-assistants. Name the model and version where you know it. "How you checked" is the important
-column: say what you verified yourself, not that the output "looked right". If you used no AI
-tools, replace the table with a sentence saying so.
-:::
-
 | Tool and model | What it was used for | How you checked the output |
 |---|---|---|
-| *e.g., Claude Code (Claude Opus 5)* | *Implemented the experiment from the original Methods section* | *Ran the automated tests; took the study myself; compared every screen with the original materials* |
-| *e.g., Claude Code (Claude Opus 5)* | *Drafted the analysis code* | *Checked the exclusion counts by hand; confirmed the key test matches the preregistration* |
-| *e.g., ChatGPT* | *Comments on my draft of the Introduction (no text generated)* | *Decided which comments to act on and made every change myself; checked any factual claim against the source* |
+|Claude Sonnet 5.5 | Searched through PDFs of review papers for possible online adult experiments | Read papers cited to ensure they were legitimate and that they could be replicated with an online study |
 
 I wrote all of the text in this report myself. AI tools were not used to write, rewrite or
 paraphrase it, and were not used to generate, alter, or impute any participant data. I take full
@@ -236,15 +216,9 @@ bind_rows(
 # Phase 1: Replication
 
 ## Introduction
+In this project, I tried to replicate Experiment 1 of Jara-Ettinger & Rubio-Fernandez (2021). The original study found that adults can infer what information speakers know about objects based on the specificity of the language they use to refer to them. In Experiment 1, participants were shown four shapes on a screen and then told that speakers could not see one of the four objects and to guess what the speaker was referring to and what the speaker's blind spot was. They found that adults' predictions about which of the four shapes speakers did not know was better predicted by a theory of mind model that inferred speakers' knowledge from the specificity of their reference, than a deductive model that did not. The key statistic I aimed to replicate was that participants' belief predictions were better predicted by the theory of mind model compared to the deductive model (*t*(59) = 5.43, *p* < 0.0001 by paired *t* test) 
 
-::: {.callout-tip icon=false}
-## Guidance
-
-One or two paragraphs, no abstract and no literature review: that is in the original paper.
-Say what the original study found, which specific finding you are replicating, and why it
-matters to you. Write the Introduction and Methods in the past tense, even though you write
-them before collecting data.
-:::
+This finding mattered to me since I am interested in thinking about frameworks to use to understand how children reason about speaker beliefs to learn words. To aid in that goal, I extended this study by replacing the speaker object reference with a 2-3 sentence long conversational segment inspired by CHILDES, a naturalistic corpus of what children hear, and replaced the objects with real-world objects that could be referred to across these segments.
 
 ## Methods
 
