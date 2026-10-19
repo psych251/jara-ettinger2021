@@ -57,19 +57,17 @@ experiment_id_phase2 <- "jara-ettinger2021-phase2"
 #| label: original-study
 #| include: false
 # The original study's numbers, entered once and used by the power analysis, the Key
-# statistics table, and the side-by-side figures. Replace these with your original study's
-# values, and say in a comment exactly where in the paper each one comes from.
+# statistics table, and the side-by-side figures. 
 #
-# Tversky & Kahneman (1981), Problem 1 (gain frame, N = 152): 72% chose the certain program,
-# 28% the risky one. Problem 2 (loss frame, N = 155): 22% certain, 78% risky. The paper
-# reports percentages, so the counts below are reconstructed from them.
-original <- tibble(
-  condition = c("gain", "loss"),
-  n         = c(152, 155),
-  risky     = round(c(0.28 * 152, 0.78 * 155))
+# Jara-Ettinger & Rubio-Fernandez (2021), Experiment 1 (N = 60): Each participant's performance
+# on the belief inference task was compared against a theory of mind model (Model A) and a deductive model (Model B)
+# The subject-level difference is tested with a paired t test. (Page 4, Paragraph 4)
+original <- list(
+  n = 60,   # number of participants in the paired test
+  t = 5.43,    # paired t statistic, Model A vs Model B
+  mean_diff = 0.24 # mean difference between correlation of Model A and Model B
 )
-original_p_gain <- original$risky[original$condition == "gain"] / original$n[original$condition == "gain"]
-original_p_loss <- original$risky[original$condition == "loss"] / original$n[original$condition == "loss"]
+original_dz <- original$t / sqrt(original$n)
 ```
 
 ::: {.callout-note appearance="simple" icon=false}
@@ -77,7 +75,7 @@ original_p_loss <- original$risky[original$condition == "loss"] / original$n[ori
 
 - **Original paper:** Jara-Ettinger, J., & Rubio-Fernandez, P. (2021). Quantitative mental state attributions in language understanding. Science advances, 7(47), eabj0970. <https://doi.org/10.1126/sciadv.abj0970>
 - **Preregistration:** [OSF registration](https://osf.io/XXXXX) *(registered YYYY-MM-DD, before final data collection)*
-- **Live experiment:** <https://psych251.github.io/your-repo/> (take the study exactly as participants did)
+- **Live experiment:** <https://psych251.github.io/jara-ettinger2021/> 
 - **Repository:** <https://github.com/psych251/jara-ettinger2021> (experiment code, data, and this report)
 :::
 
@@ -86,7 +84,7 @@ original_p_loss <- original$risky[original$condition == "loss"] / original$n[ori
 | Tool and model | What it was used for | How you checked the output |
 |---|---|---|
 |Claude Sonnet 5.5 | Searched through PDFs of review papers for possible online adult experiments | Read papers cited to ensure they were legitimate and that they could be replicated with an online study |
-|Claude Opus 5.5 Medium | Implemented the experiment website | Ran through the experiment in my browser to make sure everything worked and checked the database output |
+|Claude Opus 5.5 Medium | Implemented the experiment website, updated statistics in this report to use within-subject paired t-test design | Ran through the experiment in my browser to make sure everything worked and checked the database output, looked through updated code in this file to ensure that the implementation of the statistics was correct and that no text was updated |
 
 I wrote all of the text in this report myself. AI tools were not used to write, rewrite or
 paraphrase it, and were not used to generate, alter, or impute any participant data. I take full
@@ -121,68 +119,90 @@ read_phase <- function(id) {
 
   complete <- participants |> filter(completed)
 
-  # Exclusion rule: replace with the rule you preregistered. Here: at least 6 of 8
-  # lexical-decision trials correct, and at least one speeded response at all (a session in
-  # which every speeded trial timed out is what a device without a keyboard produces).
-  ld <- trials |>
-    filter(task == "lexical_decision") |>
-    group_by(participant_id) |>
-    summarise(ld_acc           = mean(as.logical(correct), na.rm = TRUE),
-              ld_all_timed_out = all(as.logical(timed_out)),
-              .groups = "drop")
-  checked <- complete |> left_join(ld, by = "participant_id")
-  keep <- checked |> filter(!is.na(ld_acc), !ld_all_timed_out, ld_acc >= 0.75)
+  # Exclusion rule: analyze everyone who finished the study and has all 14 trials saved.
+  # The original experiment data contain only complete sessions and report no exclusions.
+  n_main <- trials |>
+    filter(task == "trial") |>
+    count(participant_id, name = "n_main_trials")
+  keep <- complete |>
+    left_join(n_main, by = "participant_id") |>
+    filter(n_main_trials %in% 14)
 
   list(participants = participants, trials = trials, errors = errors,
-       complete = complete, keep = keep,
-       n_no_response = sum(checked$ld_all_timed_out %in% TRUE))
+       complete = complete, keep = keep)
 }
 
-# The key comparison's raw counts: how many analysed participants chose the risky program
-# in each frame.
-risky_counts <- function(d) {
+# Model predictions for the 28 trials, from the authors' OSF archive (osf.io/h8qfy,
+# ProcessedData/Exp1_Model.csv): "ToM" is Model A, "Deductive" is Model B. Same coordinates as
+# the trackpads: x = probability of the right column, y = probability of the bottom row;
+# lref = display A, rref = display B, cg = blind spot.
+model_predictions <- read_csv(file.path("..", "data", "original", "Exp1_Model.csv"),
+                              show_col_types = FALSE) |>
+  pivot_longer(lref_x:cg_y, names_to = "variable") |>
+  pivot_wider(names_from = model, values_from = value)
+
+# How well one participant's responses fit one model: as in the original's subject-level
+# analysis (Exp1_AnalyzeResults.R), the correlation across that participant's 14 trials
+# between their trackpad positions (x and y, so 28 values) and the model's predictions.
+score_fit <- function(response, prediction) cor(response, prediction, use = "complete.obs")
+
+# Each analyzed participant's fit to Model A and Model B, and the difference (A - B), for
+# belief (blind spot) inferences, the cg_x and cg_y trackpad. Responses are already in the
+# model's orientation (experiment.js undoes the rotation and left/right swap). Participants
+# whose fit can't be computed (e.g. the blind-spot marker never moved) are dropped here.
+# Run on the original participants' data, this reproduces the paper: 0.586 vs 0.350, t(59) = 5.43.
+participant_scores <- function(d) {
   d$trials |>
-    filter(task == "framing", participant_id %in% d$keep$participant_id) |>
-    group_by(condition) |>
-    summarise(risky = sum(choice == "risky"), n = n(), .groups = "drop")
+    filter(task == "trial", participant_id %in% d$keep$participant_id) |>
+    select(participant_id, TrialId = trial_id, cg_x, cg_y) |>
+    pivot_longer(c(cg_x, cg_y), names_to = "variable", values_to = "response") |>
+    left_join(model_predictions, by = c("TrialId", "variable")) |>
+    group_by(participant_id) |>
+    summarise(score_a = suppressWarnings(score_fit(response, ToM)),
+              score_b = suppressWarnings(score_fit(response, Deductive)),
+              .groups = "drop") |>
+    filter(!is.na(score_a), !is.na(score_b)) |>
+    mutate(diff = score_a - score_b)
 }
 
-# The key statistic: difference in the proportion choosing the risky program (loss minus
-# gain) with a 95% CI, and the uncorrected chi-square, which is the same test. NULL until
-# both frames have at least one analysed participant.
-diff_ci <- function(counts) {
-  loss <- counts[counts$condition == "loss", ]
-  gain <- counts[counts$condition == "gain", ]
-  if (nrow(loss) == 0 || nrow(gain) == 0) return(NULL)
-  pt <- prop.test(c(loss$risky, gain$risky), c(loss$n, gain$n), correct = FALSE)
-  tibble(N = loss$n + gain$n,
-         estimate = unname(pt$estimate[1] - pt$estimate[2]),
-         ci_low = pt$conf.int[1], ci_high = pt$conf.int[2],
-         statistic = unname(pt$statistic), p = pt$p.value)
+# The key statistic: mean paired difference (Model A minus Model B) with a 95% CI, the
+# paired t test, and d_z. NULL until at least two participants have scores.
+paired_test <- function(scores) {
+  if (is.null(scores) || nrow(scores) < 2) return(NULL)
+  tt <- t.test(scores$score_a, scores$score_b, paired = TRUE)
+  tibble(N = nrow(scores),
+         estimate  = unname(tt$estimate),
+         ci_low    = tt$conf.int[1], ci_high = tt$conf.int[2],
+         statistic = unname(tt$statistic), df = unname(tt$parameter), p = tt$p.value,
+         d_z       = mean(scores$diff) / sd(scores$diff))
 }
 
-# Side-by-side figure: any number of studies on the same axes, in the order given.
-prop_ci <- function(x, n) {
-  ci <- prop.test(x, n, correct = FALSE)$conf.int
-  tibble(p = x / n, low = ci[1], high = ci[2])
+# The original study's paired difference and 95% CI, rebuilt from its reported mean
+# difference, paired t, and N, in the same shape paired_test() returns.
+original_paired <- function(o) {
+  df   <- o$n - 1
+  se   <- abs(o$mean_diff / o$t)
+  half <- qt(0.975, df) * se
+  tibble(N = o$n, estimate = o$mean_diff,
+         ci_low = o$mean_diff - half, ci_high = o$mean_diff + half,
+         statistic = o$t, df = df, p = 2 * pt(-abs(o$t), df),
+         d_z = o$t / sqrt(o$n))
 }
+
+# Side-by-side figure: each study's paired difference with its 95% CI, in the order given.
 comparison_plot <- function(...) {
   studies <- list(...)
-  studies <- studies[!map_lgl(studies, ~ is.null(.x) || nrow(.x) == 0)]
+  studies <- studies[!map_lgl(studies, is.null)]
   df <- imap_dfr(studies, ~ mutate(.x, Study = .y)) |>
-    rowwise() |> mutate(prop_ci(risky, n)) |> ungroup() |>
-    mutate(Study = factor(Study, levels = names(studies)), label = sprintf("n = %d", n))
-  fills <- setNames(c("grey55", "#1E6E76", "#B8792A")[seq_along(studies)], names(studies))
-  dodge <- position_dodge(width = 0.8)
-  ggplot(df, aes(x = condition, y = p, fill = Study)) +
-    geom_col(position = dodge, width = 0.75) +
-    geom_errorbar(aes(ymin = low, ymax = high), position = dodge, width = 0.2) +
-    geom_text(aes(y = 0.02, label = label), position = dodge, vjust = 0, size = 3, colour = "white") +
-    scale_y_continuous(labels = scales::percent, limits = c(0, 1)) +
-    scale_fill_manual(values = fills) +
-    labs(x = "Frame", y = "Chose the risky program", fill = NULL) +
-    theme_minimal(base_size = 12) +
-    theme(legend.position = "top")
+    mutate(Study = factor(Study, levels = names(studies)), label = sprintf("n = %d", N))
+  cols <- setNames(c("grey55", "#1E6E76", "#B8792A")[seq_along(studies)], names(studies))
+  ggplot(df, aes(x = Study, y = estimate, colour = Study)) +
+    geom_hline(yintercept = 0, linetype = "dashed", colour = "grey60") +
+    geom_pointrange(aes(ymin = ci_low, ymax = ci_high), size = 0.6) +
+    geom_text(aes(y = ci_high, label = label), vjust = -0.8, size = 3, colour = "grey30") +
+    scale_colour_manual(values = cols, guide = "none") +
+    labs(x = NULL, y = "ToM minus deductive model\n(per-participant r, belief inferences)") +
+    theme_minimal(base_size = 12)
 }
 
 phase1 <- read_phase(experiment_id)
@@ -196,22 +216,23 @@ have_phase2 <- !is.null(phase2)
 #| echo: false
 fmt_row <- function(study, r) {
   if (is.null(r)) {
-    return(tibble(Study = study, N = "", `Effect (loss − gain)` = "not yet collected",
-                  `95% CI` = "", `χ²(1)` = "", p = ""))
+    return(tibble(Study = study, N = "", `Difference (A − B)` = "not yet collected",
+                  `95% CI` = "", `t (df)` = "", p = "", `d_z` = ""))
   }
   tibble(Study = study, N = as.character(r$N),
-         `Effect (loss − gain)` = sprintf("%.0f points", 100 * r$estimate),
-         `95% CI` = sprintf("[%.0f, %.0f]", 100 * r$ci_low, 100 * r$ci_high),
-         `χ²(1)` = sprintf("%.2f", r$statistic),
-         p = format.pval(r$p, digits = 2, eps = 0.001))
+         `Difference (A − B)` = sprintf("%.3f", r$estimate),
+         `95% CI` = sprintf("[%.3f, %.3f]", r$ci_low, r$ci_high),
+         `t (df)` = sprintf("%.2f (%.0f)", r$statistic, r$df),
+         p = format.pval(r$p, digits = 2, eps = 0.001),
+         `d_z` = sprintf("%.2f", r$d_z))
 }
 bind_rows(
-  fmt_row("Original", diff_ci(original)),
-  fmt_row("Phase 1: replication", if (have_data) diff_ci(risky_counts(phase1))),
-  fmt_row("Phase 2: extension", if (have_phase2) diff_ci(risky_counts(phase2)))
+  fmt_row("Original", original_paired(original)),
+  fmt_row("Phase 1: replication", if (have_data) paired_test(participant_scores(phase1))),
+  fmt_row("Phase 2: extension", if (have_phase2) paired_test(participant_scores(phase2)))
 ) |>
-  knitr::kable(align = "lrlllr",
-               caption = "Key comparison: difference in the percentage of analysed participants choosing the risky program, loss frame minus gain frame.")
+  knitr::kable(align = "lrllllr",
+               caption = "Key comparison: mean per-participant difference in fit to Model A minus Model B, paired t test.")
 ```
 
 # Phase 1: Replication
@@ -225,114 +246,66 @@ This finding mattered to me since I am interested in thinking about frameworks t
 
 ### Power analysis
 
-::: {.callout-tip icon=false}
-## Guidance
-
-Report the original effect size, the sample needed for 80%, 90% and 95% power to detect it,
-and the sample you chose and why. The table below is computed from the original study's
-numbers entered at the top of this file.
-
-Original effects are usually overestimates, so powering to the original effect tends to
-produce an underpowered replication. One widely used alternative is to collect 2.5 times the
-original sample, which gives 80% power to detect an effect the original study had only 33%
-power to detect (Simonsohn, 2015; Experimentology §10.4). Say which approach you used, and
-what the course's participant budget allowed.
-:::
+The original effect size found was 0.70. Details about the number of participants required to detect that effect with different amounts of power are detailed below.
 
 ```{r}
 #| label: power
 power_rows <- map_dfr(c(0.80, 0.90, 0.95), function(pw) {
-  n <- power.prop.test(p1 = original_p_gain, p2 = original_p_loss,
-                       power = pw, sig.level = 0.05)$n
-  tibble(power = scales::percent(pw), n_per_group = ceiling(n), n_total = 2 * ceiling(n))
+  n <- power.t.test(delta = original_dz, sd = 1, power = pw,
+                    sig.level = 0.05, type = "paired")$n
+  tibble(power = scales::percent(pw), n = ceiling(n))
 })
 
-original_effect <- original_p_loss - original_p_gain
 two_and_half <- ceiling(2.5 * original$n)
 
-knitr::kable(power_rows, col.names = c("Power", "N per frame", "N total"),
+knitr::kable(power_rows, col.names = c("Power", "N participants"),
              caption = sprintf(
-               "Sample needed to detect the original effect (risky choice: %.0f%% gain vs %.0f%% loss, a difference of %.0f points), two-sided alpha = .05.",
-               100 * original_p_gain, 100 * original_p_loss, 100 * original_effect))
+               "Participants needed to detect the original Model A vs Model B difference (d_z = %.2f), paired t test, two-sided alpha = .05.",
+               original_dz))
 ```
 
-For comparison, 2.5 times the original sample would be `r two_and_half[1]` in the gain frame
-and `r two_and_half[2]` in the loss frame (`r sum(two_and_half)` in total).
+For comparison, 2.5 times the original sample would be `r two_and_half[1]` in total. I chose a sample size of 20 to be able to detect the original effect size with at least 80% power.
 
 ### Planned sample
 
-::: {.callout-tip icon=false}
-## Guidance
-
-Planned sample size and stopping rule, sampling frame (for example, "US residents on Prolific,
-fluent in English, 18 or older"), known demographics, and any preselection or screening. The
-stopping rule should be data-independent: "collect until N participants pass the exclusion
-criteria below" rather than "until the result is clear".
-:::
+I planned to collect a sample size of 20. Those participants were required to be US residents on Prolific who were fluent in English and 18 or older. I collected data until 20 participants passed the exclusion criteria below.
 
 ### Materials
 
-::: {.callout-tip icon=false}
-## Guidance
+Tutorial: "Participants first read a brief tutorial and had to complete a small questionnaire to ensure they
+read the instructions. See our OSF site for screenshots of the tutorial, inclusion
+questionnaire, and test screen." Instructions pages 6, 7, 8, and 9 were updated to remove the 'Continue' button in the screenshots of the study to avoid confusion with the JS-Psych version of the 'Continue' button used that looks slightly different. The inclusion questionnaire was adapted into JS-Psych but had the same list of questions.
 
-All materials. You can quote the original article directly: put the text in quotation marks
-and note that it was followed precisely, or quote it and point out the exceptions. Link to the
-live experiment above rather than pasting screenshots of every screen.
-:::
+Shapes: "Stimuli consisted of 28 trials. Each trial in turn consisted of two 2 × 2 grids with four colored geometrical shapes and a definite description of one of them. Displays were created by combining 4 shapes (circle, square, triangle and star) in 4 colors (red, green, blue and yellow). We generated 4 possible conditions for each display by crossing the
+presence or absence of a color adjective in the target description with the presence or absence of
+a contrast shape in the display" The original authors provided information about each of the 28 trials (display combinations and utterance) on OSF that were used to design the stimuli for this study. Since the original authors did not provide the shapes themselves, I recreated these shapes as SVG objects based on how these objects appeared in the test screen screenshot. 
 
 ### Procedure
 
-::: {.callout-tip icon=false}
-## Guidance
+Participants first consented to participating in the study. Then, participants had to "read a brief tutorial and had to complete a small questionnaire to ensure they read the instructions. Participants who got at least one question wrong were redirected to the beginning of the tutorial and only participants who responded to all questions correctly were
+allowed to participate in the study." 
 
-As for Materials: quote the original where you can and point out the exceptions. Describe the
-sequence a participant experiences, from consent to debrief, and how long it takes.
-:::
+Each participant saw 14 trials as part of the study. "Stimuli were randomly split into two subsets of 14 trials, and participants were presented with only one of the two lists" "Each trial in turn consisted of two 2 × 2 grids with four colored geometrical shapes and a definite description of one of them." "In each trial, participants were told that the speaker intended to refer to only one of the corners and that the speaker could not see one of the four corners. Participants were also told that the speaker could not see the same corner in each display. The speaker’s choice of referential expression to single out the target was written above each display. Trial order was randomized across participants. The pairs of displays were randomly ordered and rotated in each trial. In each trial, participants were presented with three 'trackpads,' each with a circle that the participants could position anywhere they wished. Participants had to input their belief about the referent in each display in the first two trackpads and their beliefs about the blind spot in the third trackpad." 
+
+After the trials, participants were asked how old they were, to match the demographic data collected in the original study. On the next screen, participants were asked to optionally provide any comments they have. Finally, participants were shown a debrief screen where the purpose of the experiment is explained and it is disclosed that the speaker was simulated. 
+
+The study took 20 minutes in total.
 
 ### Analysis plan
 
-::: {.callout-tip icon=false}
-## Guidance
+**Key analysis of interest.** Participants' performance on the belief task has a higher correlation with a theory-of-mind model as compared to a deductive model, tested with a paired t-test comparing the per-participant correlation difference. The effect size is the mean difference divided by the standard deviation of the differences, with a 95% confidence interval.
 
-The analysis strategy, as close to the original as possible: data cleaning rules, exclusion
-rules, covariates, and the model or test. Original papers often do not spell this out; say
-where you had to make a choice and what you chose.
-
-**State the key analysis of interest explicitly.** That is the single test your replication
-stands or falls on, and it must match your preregistration. You can pre-specify additional
-analyses here too.
-:::
-
-**Key analysis of interest.** The proportion of participants choosing the risky program is
-higher in the loss frame than in the gain frame, tested with a chi-square test of independence
-on the 2 × 2 table of frame by choice. The effect size is the difference in the proportion
-choosing the risky program (loss minus gain), with a 95% confidence interval.
-
-**Exclusions.** Participants are excluded if they did not complete the study, if they answered
-no speeded trial at all (every lexical-decision trial timed out, the signature of a device
-without a keyboard), or if they answered fewer than 6 of the 8 lexical-decision trials
-correctly.
+**Exclusions.** Participants will be excluded if they do not complete the study. Since the original experiment only contained participants with complete data, I added the first criterion to ensure that standard was matched.
 
 ### Differences from the original study
 
-::: {.callout-tip icon=false}
-## Guidance
-
-Every known difference in sample, setting, procedure, materials, and analysis, one per row.
-Minimizing differences is the goal, but some always remain. For each one, say whether it is
-expected to matter, based on claims in the original article or later research on when the
-effect does and does not appear. The rows below are the demo's real differences and show the
-level of detail expected; replace them with yours.
-:::
-
 | Aspect | Original study | This replication | Expected to matter? |
 |---|---|---|---|
-| Sample | University students in Stanford and British Columbia classrooms | Adults recruited on Prolific | Possibly. Framing effects have been found in both student and general samples, but their size varies across populations. |
-| Setting | Paper questionnaire in class | Online, unsupervised, on the participant's own computer | Unlikely for a single vignette, though attention may be lower online. |
-| Wording | "an unusual Asian disease" | "an unusual disease" | Unlikely. The ethnonym is incidental to the manipulation and dated. |
-| Design | Between subjects: each participant saw one frame | Between subjects, randomly assigned | No. |
-| Response | Circle a program on paper | Click a button | Unlikely. |
-| Other tasks | Problems presented alongside other questionnaire items | Followed by a short lexical-decision task used as an attention check | Unlikely: the check comes after the choice. |
+| Sample | Adults recruited on Amazon Mechanical Turk | Adults recruited on Prolific residing in the United States who speak English | Unlikely, the task uses shapes and no context-specific items and both samples are collected online. |
+| Instructions | 'Continue' button in task design screenshot | No 'Continue' button in task design screenshot | Unlikely. The presence of the button is not relevant to understanding of the task design. |
+| Exclusion criteria | None | Participants are excluded if they do not complete the study. | Unlikely, since all of the participants in the original sample had complete data. |
+| Additional tasks | None | Participants are asked to provide their age and any additional comments | Unlikely. These tasks are only asked to be completed after the participant completes the experimental trials. |
+
 
 ### Methods addendum (post data collection)
 
@@ -372,7 +345,6 @@ trials        <- phase1$trials
 errors        <- phase1$errors
 complete      <- phase1$complete
 keep          <- phase1$keep
-n_no_response <- phase1$n_no_response
 ```
 
 ```{r}
@@ -389,7 +361,7 @@ bind_rows(
   pivot_wider(names_from = condition, values_from = n, values_fill = 0) |>
   mutate(Total = rowSums(across(-step))) |>
   rename(Step = step) |>
-  knitr::kable(caption = "Participants at each step, by frame. Differences between frames in attrition or exclusion are a threat to validity and should be discussed.")
+  knitr::kable(caption = "Participants at each step, by trial list. Differences between lists in attrition or exclusion are a threat to validity and should be discussed.")
 ```
 
 ```{r}
@@ -399,10 +371,6 @@ bind_rows(
 #| results: asis
 cat(sprintf("Of %d participants who started, %d completed the study and %d met the exclusion criteria.",
             nrow(participants), nrow(complete), nrow(keep)))
-if (n_no_response > 0) {
-  cat(sprintf(" %d completed session(s) contained no response to any speeded trial and were excluded on that basis.",
-              n_no_response))
-}
 if (nrow(keep) == 0) cat(" No participants remain for analysis yet, so the results below are empty.")
 cat("\n")
 ```
@@ -415,8 +383,7 @@ demo <- trials |>
   mutate(resp = map(response, ~ fromJSON(.x))) |>
   transmute(
     participant_id,
-    age    = map_dbl(resp, ~ as.numeric(.x$age %||% NA)),
-    gender = map_chr(resp, ~ as.character(.x$gender %||% NA))
+    age = map_dbl(resp, ~ as.numeric(.x$age %||% NA))
   )
 
 if (nrow(demo) > 0) {
@@ -424,7 +391,7 @@ if (nrow(demo) > 0) {
     summarise(N = n(), `Mean age` = round(mean(age, na.rm = TRUE), 1),
               `SD age` = round(sd(age, na.rm = TRUE), 1),
               `Age not given` = sum(is.na(age))) |>
-    knitr::kable(caption = "Age of the analysed sample.")
+    knitr::kable(caption = "Age of the analyzed sample.")
 }
 ```
 
@@ -454,21 +421,21 @@ the data beyond that.
 ```{r}
 #| label: confirmatory
 #| eval: !expr have_data
-framing <- trials |>
-  filter(task == "framing", participant_id %in% keep$participant_id) |>
-  select(participant_id, condition, choice)
-risky <- risky_counts(phase1)
-tab <- table(Frame = framing$condition, Choice = framing$choice)
+# Belief inferences: each participant's correlation with Model A (ToM) vs Model B (deductive),
+# paired t test (original: 0.586 vs 0.350, t(59) = 5.43).
+scores <- participant_scores(phase1)
+key    <- paired_test(scores)
 
-if (all(dim(tab) == c(2, 2))) {
-  # No continuity correction, so this test and the effect-size interval below agree: the
-  # uncorrected 2 x 2 chi-square is the same test as the two-proportion comparison.
-  print(tab)
-  print(chisq.test(tab, correct = FALSE))
+if (!is.null(key)) {
+  print(t.test(scores$score_a, scores$score_b, paired = TRUE))
+  scores |>
+    summarise(N = n(), `Mean r, Model A (ToM)` = mean(score_a),
+              `Mean r, Model B (deductive)` = mean(score_b),
+              `Model A fits better` = sum(diff > 0)) |>
+    knitr::kable(digits = 3, caption = "Per-participant correlations with each model, belief inferences.")
 } else {
-  message("Chi-square not run: the frame-by-choice table is ", paste(dim(tab), collapse = " x "),
-          ". It needs both frames and both choices; with ", nrow(framing),
-          " participant(s) in the analysis set this is expected.")
+  message("Paired t test not run: it needs at least two analysed participants with a computable ",
+          "correlation; there are ", nrow(scores), ".")
 }
 ```
 
@@ -487,18 +454,19 @@ informative and should be reported as such (Experimentology §3.2).
 ```{r}
 #| label: comparison
 #| eval: !expr have_data
-orig <- diff_ci(original)
-rep  <- diff_ci(risky)
+orig <- original_paired(original)
+rep  <- key
 
 if (!is.null(rep)) {
   bind_rows(orig |> mutate(Study = "Original"), rep |> mutate(Study = "Phase 1: replication")) |>
     transmute(Study, N,
-              `Difference (loss − gain)` = sprintf("%.0f points", 100 * estimate),
-              `95% CI` = sprintf("[%.0f, %.0f]", 100 * ci_low, 100 * ci_high),
+              `Difference in r (A − B)` = sprintf("%.2f", estimate),
+              `95% CI` = sprintf("[%.2f, %.2f]", ci_low, ci_high),
+              d_z = sprintf("%.2f", d_z),
               p = format.pval(p, digits = 2, eps = 0.001)) |>
-    knitr::kable(caption = "Effect size: difference in the percentage choosing the risky program.")
+    knitr::kable(caption = "Effect size: mean per-participant difference in correlation with Model A (ToM) and Model B (deductive), belief inferences.")
 } else {
-  message("Replication effect size not computed yet: need at least one analysed participant in each frame.")
+  message("Replication effect size not computed yet: need at least two analysed participants.")
 }
 ```
 
@@ -511,10 +479,10 @@ if (!is.null(rep)) {
   excludes_zero <- rep$ci_low > 0 | rep$ci_high < 0
   includes_orig <- orig$estimate >= rep$ci_low & orig$estimate <= rep$ci_high
   cat(sprintf(
-    "The replication's 95%% interval %s zero and %s the original estimate of %.0f points. ",
+    "The replication's 95%% interval %s zero and %s the original estimate of %.2f. ",
     if (excludes_zero) "excludes" else "includes",
     if (includes_orig) "includes" else "does not include",
-    100 * orig$estimate))
+    orig$estimate))
   cat("These two facts are the starting point for the summary in the Discussion, not the conclusion.\n")
 }
 ```
@@ -554,10 +522,10 @@ caption. If the original reported no variability, say so rather than leaving it 
 ```{r}
 #| label: fig-comparison
 #| eval: !expr have_data
-#| fig-cap: "Percentage choosing the risky program in each frame, original study and Phase 1 replication. Error bars are 95% confidence intervals."
+#| fig-cap: "Mean per-participant difference in correlation with Model A (ToM) and Model B (deductive), belief inferences, original study and Phase 1 replication. Error bars are 95% confidence intervals; the original CIs are rebuilt from the reported statistics."
 #| fig-width: 7
 #| fig-height: 4
-comparison_plot(Original = original, `Phase 1: replication` = risky)
+comparison_plot(Original = orig, `Phase 1: replication` = key)
 ```
 
 ### Exploratory analyses
@@ -570,21 +538,9 @@ they generate hypotheses rather than test them.
 :::
 
 ```{r}
-#| label: exploratory-rt
+#| label: exploratory
 #| eval: !expr have_data
-ld <- trials |>
-  filter(task == "lexical_decision", participant_id %in% keep$participant_id) |>
-  mutate(correct = as.logical(correct), is_word = as.logical(is_word), rt = as.numeric(rt)) |>
-  filter(correct, !is.na(rt))
-
-if (nrow(ld) > 0) {
-  ld |>
-    group_by(`Real word` = is_word) |>
-    summarise(`Mean RT (ms)` = round(mean(rt)), `SD (ms)` = round(sd(rt)), Trials = n(), .groups = "drop") |>
-    knitr::kable(caption = "Exploratory: lexical-decision response times, correct trials only.")
-} else {
-  message("No correct lexical-decision trials with a response time yet.")
-}
+# Exploratory analyses go here.
 ```
 
 ```{r}
@@ -693,43 +649,48 @@ have it and the original's otherwise.
 
 ```{r}
 #| label: phase2-power
-phase2_n_per_group <- 150   # planned analysed participants per condition in Phase 2
+phase2_n <- 150   # planned analysed participants in Phase 2 (each scored against both models)
 
-p1_counts <- if (have_data) risky_counts(phase1)
-p1_stats  <- if (have_data) diff_ci(p1_counts)
+p1_scores <- if (have_data) participant_scores(phase1)
+p1_stats  <- if (have_data) paired_test(p1_scores)
+orig      <- original_paired(original)
+
+# SD of the per-participant differences, which sets precision. Taken from Phase 1 if it has
+# data, otherwise recovered from the original's mean difference and t.
 basis <- if (!is.null(p1_stats)) {
-  list(gain = p1_counts$risky[p1_counts$condition == "gain"] / p1_counts$n[p1_counts$condition == "gain"],
-       loss = p1_counts$risky[p1_counts$condition == "loss"] / p1_counts$n[p1_counts$condition == "loss"],
-       source = "Phase 1")
+  list(sd_diff = sd(p1_scores$diff), source = "Phase 1")
 } else {
-  list(gain = original_p_gain, loss = original_p_loss, source = "the original study")
+  list(sd_diff = abs(original$mean_diff) * sqrt(original$n) / abs(original$t),
+       source = "the original study")
 }
 
-# Expected 95% CI half-width on the difference at n per condition.
-half_width <- function(n) 1.96 * sqrt(basis$gain * (1 - basis$gain) / n + basis$loss * (1 - basis$loss) / n)
-power_at <- function(n, p1, p2) {
-  tryCatch(power.prop.test(n = n, p1 = p1, p2 = p2, sig.level = 0.05)$power, error = function(e) NA)
+# Expected 95% CI half-width on the mean difference with n participants.
+half_width <- function(n) qt(0.975, n - 1) * basis$sd_diff / sqrt(n)
+power_at <- function(n, dz) {
+  tryCatch(power.t.test(n = n, delta = abs(dz), sd = 1, sig.level = 0.05,
+                        type = "paired")$power,
+           error = function(e) NA)
 }
 
 rows <- tibble(
   Study = c(if (!is.null(p1_stats)) "Phase 1 (actual)", "Phase 2 (planned)"),
-  `N analysed` = c(if (!is.null(p1_stats)) p1_stats$N, 2 * phase2_n_per_group),
-  `95% CI half-width` = c(if (!is.null(p1_stats)) sprintf("±%.0f points", 100 * (p1_stats$ci_high - p1_stats$ci_low) / 2),
-                          sprintf("±%.0f points (expected)", 100 * half_width(phase2_n_per_group)))
+  `N analysed` = c(if (!is.null(p1_stats)) p1_stats$N, phase2_n),
+  `95% CI half-width` = c(if (!is.null(p1_stats)) sprintf("±%.3f", (p1_stats$ci_high - p1_stats$ci_low) / 2),
+                          sprintf("±%.3f (expected)", half_width(phase2_n)))
 )
-knitr::kable(rows, caption = sprintf("Precision of the key estimate, Phase 2 expected values based on %s.", basis$source))
+knitr::kable(rows, caption = sprintf("Precision of the key estimate (Model A minus Model B), Phase 2 expected values based on %s.", basis$source))
 
 tibble(
-  `Effect to detect` = c(sprintf("Original: %.0f points", 100 * (original_p_loss - original_p_gain)),
-                         if (!is.null(p1_stats)) sprintf("Phase 1: %.0f points", 100 * p1_stats$estimate),
-                         sprintf("Half the original: %.0f points", 50 * (original_p_loss - original_p_gain))),
+  `Effect to detect` = c(sprintf("Original: d_z = %.2f", orig$d_z),
+                         if (!is.null(p1_stats)) sprintf("Phase 1: d_z = %.2f", p1_stats$d_z),
+                         sprintf("Half the original: d_z = %.2f", orig$d_z / 2)),
   `Power at planned N` = scales::percent(c(
-    power_at(phase2_n_per_group, original_p_gain, original_p_loss),
-    if (!is.null(p1_stats)) power_at(phase2_n_per_group, basis$gain, basis$loss),
-    power_at(phase2_n_per_group, original_p_gain, original_p_gain + (original_p_loss - original_p_gain) / 2)
+    power_at(phase2_n, orig$d_z),
+    if (!is.null(p1_stats)) power_at(phase2_n, p1_stats$d_z),
+    power_at(phase2_n, orig$d_z / 2)
   ), accuracy = 1)
 ) |>
-  knitr::kable(caption = sprintf("Power of the Phase 2 key test at %d per condition, two-sided alpha = .05.", phase2_n_per_group))
+  knitr::kable(caption = sprintf("Power of the Phase 2 paired t test at %d participants, two-sided alpha = .05.", phase2_n))
 ```
 
 ## Analysis plan
@@ -767,27 +728,26 @@ if (!have_phase2) {
 ```{r}
 #| label: phase2-results
 #| eval: !expr have_phase2
-p2_counts <- risky_counts(phase2)
-p2_stats  <- diff_ci(p2_counts)
+p2_stats <- paired_test(participant_scores(phase2))
 cat(sprintf("Phase 2: %d started, %d completed, %d analysed.\n",
             nrow(phase2$participants), nrow(phase2$complete), nrow(phase2$keep)))
 if (!is.null(p2_stats)) {
   p_text <- if (p2_stats$p < 0.001) "p < .001" else sprintf("p = %.3f", p2_stats$p)
-  cat(sprintf("Key comparison: %.0f points [%.0f, %.0f], chi-square(1) = %.2f, %s.\n",
-              100 * p2_stats$estimate, 100 * p2_stats$ci_low, 100 * p2_stats$ci_high,
-              p2_stats$statistic, p_text))
+  cat(sprintf("Key comparison: difference in r = %.2f [%.2f, %.2f], t(%.0f) = %.2f, %s.\n",
+              p2_stats$estimate, p2_stats$ci_low, p2_stats$ci_high,
+              p2_stats$df, p2_stats$statistic, p_text))
 }
 ```
 
 ```{r}
 #| label: fig-phase2
 #| eval: !expr have_phase2
-#| fig-cap: "Percentage choosing the risky program in each frame: original study, Phase 1 replication, and Phase 2 extension. Error bars are 95% confidence intervals."
+#| fig-cap: "Mean per-participant difference in correlation with Model A (ToM) and Model B (deductive), belief inferences: original study, Phase 1 replication, and Phase 2 extension. Error bars are 95% confidence intervals."
 #| fig-width: 8
 #| fig-height: 4
-comparison_plot(Original = original,
-                `Phase 1: replication` = if (have_data) risky_counts(phase1),
-                `Phase 2: extension` = risky_counts(phase2))
+comparison_plot(Original = original_paired(original),
+                `Phase 1: replication` = if (have_data) paired_test(participant_scores(phase1)),
+                `Phase 2: extension` = p2_stats)
 ```
 
 ## Discussion
