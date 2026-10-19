@@ -21,6 +21,7 @@
     "@jspsych/plugin-html-button-response": "^2.1.0",
     "@jspsych/plugin-html-keyboard-response": "^2.1.0",
     "@jspsych/plugin-instructions": "^2.1.0",
+    "@jspsych/plugin-preload": "^2.1.0",
     "@jspsych/plugin-survey": "^4.0.0",
     "@jspsych/plugin-survey-likert": "^2.1.0",
     "@jspsych/plugin-survey-text": "^2.1.0",

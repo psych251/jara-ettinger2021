@@ -6,5 +6,6 @@
   "@jspsych/plugin-survey": "4.0.0",
   "@jspsych/plugin-survey-likert": "2.2.0",
   "@jspsych/plugin-survey-text": "2.1.1",
+  "@jspsych/plugin-preload": "2.1.0",
   "firebase": "12.18.0"
 }

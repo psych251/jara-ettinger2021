@@ -49,8 +49,8 @@ library(jsonlite)
 
 # Must match EXPERIMENT.id in experiment.js, and the --experiment you passed to the export.
 # Phase 2 runs under its own id, so its data never mix with Phase 1's.
-experiment_id        <- "framing-demo"
-experiment_id_phase2 <- "framing-demo-phase2"
+experiment_id        <- "jara-ettinger2021-pilot-a"
+experiment_id_phase2 <- "jara-ettinger2021-phase2"
 ```
 
 ```{r}
@@ -86,6 +86,7 @@ original_p_loss <- original$risky[original$condition == "loss"] / original$n[ori
 | Tool and model | What it was used for | How you checked the output |
 |---|---|---|
 |Claude Sonnet 5.5 | Searched through PDFs of review papers for possible online adult experiments | Read papers cited to ensure they were legitimate and that they could be replicated with an online study |
+|Claude Opus 5.5 Medium | Implemented the experiment website | Ran through the experiment in my browser to make sure everything worked and checked the database output |
 
 I wrote all of the text in this report myself. AI tools were not used to write, rewrite or
 paraphrase it, and were not used to generate, alter, or impute any participant data. I take full
