@@ -279,6 +279,7 @@ function wirePads(root) {
        computer with a mouse or trackpad. Use the buttons or the arrow keys to move between pages.</p>`,
     ],
     show_clickable_nav: true,
+    button_label_next: "Continue",
     data: { task: "instructions" },
     on_finish: () => setProgress(0.05),
   };
@@ -287,6 +288,7 @@ function wirePads(root) {
     type: jsPsychInstructions,
     pages: tutorialImages.map((src) => `<img class="tutorial-slide" src="${src}" alt="Tutorial slide">`),
     show_clickable_nav: true,
+    button_label_next: "Continue",
     data: { task: "tutorial" },
   };
 
@@ -409,6 +411,7 @@ function wirePads(root) {
        the blind spot is. Press <strong>Continue</strong> when you are done with a trial.</p>`,
     ],
     show_clickable_nav: true,
+    button_label_next: "Continue",
     data: { task: "instructions" },
   };
   const trials = {
