@@ -49,7 +49,7 @@ library(jsonlite)
 
 # Must match EXPERIMENT.id in experiment.js, and the --experiment you passed to the export.
 # Phase 2 runs under its own id, so its data never mix with Phase 1's.
-experiment_id        <- "jara-ettinger2021-pilot-a"
+experiment_id        <- "jara-ettinger2021-pilot-b"
 experiment_id_phase2 <- "jara-ettinger2021-phase2"
 ```
 
@@ -91,17 +91,6 @@ paraphrase it, and were not used to generate, alter, or impute any participant d
 responsibility for the content of this report, including any errors introduced by AI tools.
 
 # Key statistics
-
-::: {.callout-tip icon=false}
-## Guidance
-
-One row per study for the key comparison: the original, your Phase 1 replication, and your
-Phase 2 extension. The table fills itself in from the data as each phase is exported, using the
-analysis code below (open "Show the analysis code"), which is shared by both phases so they are
-analysed identically. Edit that code once, here, to match your design and preregistered
-exclusion rule. On the scientific-extension track, the Phase 2 row reports the new comparison:
-adapt its code and say so in the caption.
-:::
 
 ```{r}
 #| label: analysis-functions
@@ -295,7 +284,7 @@ The study took 20 minutes in total.
 
 **Key analysis of interest.** Participants' performance on the belief task has a higher correlation with a theory-of-mind model as compared to a deductive model, tested with a paired t-test comparing the per-participant correlation difference. The effect size is the mean difference divided by the standard deviation of the differences, with a 95% confidence interval.
 
-**Exclusions.** Participants will be excluded if they do not complete the study. Since the original experiment only contained participants with complete data, I added the first criterion to ensure that standard was matched.
+**Exclusions.** Participants will be excluded if they do not complete the study or if a model correlation score cannot be computed. Since the original experiment only contained participants with complete data, I added the first criterion to ensure that standard was matched. A model correlation score can always be computed unless a participant does not move the blind-spot marker at least once, so I added the second criterion to exclude participants who did not successfully comprehend the task and on whose data the key analysis of interest cannot be performed.   
 
 ### Differences from the original study
 
@@ -303,7 +292,7 @@ The study took 20 minutes in total.
 |---|---|---|---|
 | Sample | Adults recruited on Amazon Mechanical Turk | Adults recruited on Prolific residing in the United States who speak English | Unlikely, the task uses shapes and no context-specific items and both samples are collected online. |
 | Instructions | 'Continue' button in task design screenshot | No 'Continue' button in task design screenshot | Unlikely. The presence of the button is not relevant to understanding of the task design. |
-| Exclusion criteria | None | Participants are excluded if they do not complete the study. | Unlikely, since all of the participants in the original sample had complete data. |
+| Exclusion criteria | None | Participants are excluded if they do not complete the study or if a model correlation score cannot be computed. | Unlikely, since all of the participants in the original sample had complete data and because only participants who do not move the blind-spot marker at all, indicating lack of comprehension of the study design, will have data that cannot be compared to the model. |
 | Additional tasks | None | Participants are asked to provide their age and any additional comments | Unlikely. These tasks are only asked to be completed after the participant completes the experimental trials. |
 
 
@@ -350,11 +339,15 @@ keep          <- phase1$keep
 ```{r}
 #| label: funnel
 #| eval: !expr have_data
-funnel_levels <- c("Started", "Completed", "Passed exclusion criteria")
+funnel_levels <- c("Started", "Completed", "Passed exclusion criteria", "Model fit computable")
+# participant_scores() drops anyone whose fit to either model is NA (e.g. the blind-spot
+# marker never moved), so this last row is the N in the key comparison.
+scored <- keep |> semi_join(participant_scores(phase1), by = "participant_id")
 bind_rows(
   participants |> mutate(step = "Started"),
   complete     |> mutate(step = "Completed"),
-  keep         |> mutate(step = "Passed exclusion criteria")
+  keep         |> mutate(step = "Passed exclusion criteria"),
+  scored       |> mutate(step = "Model fit computable")
 ) |>
   mutate(step = factor(step, levels = funnel_levels)) |>
   count(step, condition, .drop = FALSE) |>
@@ -441,16 +434,6 @@ if (!is.null(key)) {
 
 ### Replication assessment
 
-::: {.callout-tip icon=false}
-## Guidance
-
-Judge the replication on effect sizes, not only on whether the key test is significant. Compare
-the replication estimate and its interval with the original: does the interval exclude zero, and
-does it include the original estimate? A significant result much smaller than the original, or
-a non-significant result whose interval still includes the original effect, are both
-informative and should be reported as such (Experimentology §3.2).
-:::
-
 ```{r}
 #| label: comparison
 #| eval: !expr have_data
@@ -486,38 +469,6 @@ if (!is.null(rep)) {
   cat("These two facts are the starting point for the summary in the Discussion, not the conclusion.\n")
 }
 ```
-
-::: {.callout-tip icon=false}
-## Guidance: show the original next to your replication
-
-**Every report should have a figure that puts the original finding and your replication side by
-side.** It is the single most informative thing in a replication report: a reader can see at a
-glance whether the effect came back, and how its size compares. Make it however you can, in
-roughly this order of preference:
-
-1. **Replot both from numbers.** Enter the original's summary statistics (means or proportions,
-   with SDs, SEs or CIs, and Ns) in the original-study chunk at the top of this file, and plot
-   them on the same axes as yours. That is what the demo figure below does.
-2. **Replot the original from its data**, if the authors shared it or it is in an open
-   repository, using exactly the same plotting code as for your own data.
-3. **Show the original figure as an image** next to yours if neither is possible. Save a
-   screenshot of it, for example as `writeup/images/original-figure.png`, and lay the two out
-   in columns:
-
-   ````markdown
-   ::: {layout-ncol=2}
-   ![Original: Tversky & Kahneman (1981), Figure 1](images/original-figure.png)
-
-   ```{{r}}
-   # your replication plot here
-   ```
-   :::
-   ````
-
-Whichever you choose, use the same measure, scale, condition order and error-bar meaning for
-both panels, label which is which, and cite the source of the original values or figure in the
-caption. If the original reported no variability, say so rather than leaving it out silently.
-:::
 
 ```{r}
 #| label: fig-comparison
