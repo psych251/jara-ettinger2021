@@ -49,7 +49,7 @@ library(jsonlite)
 
 # Must match EXPERIMENT.id in experiment.js, and the --experiment you passed to the export.
 # Phase 2 runs under its own id, so its data never mix with Phase 1's.
-experiment_id        <- "jara-ettinger2021-pilot-b"
+experiment_id        <- "jara-ettinger2021-phase1"
 experiment_id_phase2 <- "jara-ettinger2021-phase2"
 ```
 
@@ -74,7 +74,7 @@ original_dz <- original$t / sqrt(original$n)
 ## Project links
 
 - **Original paper:** Jara-Ettinger, J., & Rubio-Fernandez, P. (2021). Quantitative mental state attributions in language understanding. Science advances, 7(47), eabj0970. <https://doi.org/10.1126/sciadv.abj0970>
-- **Preregistration:** [OSF registration](https://osf.io/XXXXX) *(registered YYYY-MM-DD, before final data collection)*
+- **Preregistration:** [OSF registration](https://osf.io/jt7eg/) *(registered 2026-10-27, before final data collection)*
 - **Live experiment:** <https://psych251.github.io/jara-ettinger2021/> 
 - **Repository:** <https://github.com/psych251/jara-ettinger2021> (experiment code, data, and this report)
 :::
@@ -84,7 +84,7 @@ original_dz <- original$t / sqrt(original$n)
 | Tool and model | What it was used for | How you checked the output |
 |---|---|---|
 |Claude Sonnet 5.5 | Searched through PDFs of review papers for possible online adult experiments | Read papers cited to ensure they were legitimate and that they could be replicated with an online study |
-|Claude Opus 5.5 Medium | Implemented the experiment website, updated statistics in this report to use within-subject paired t-test design | Ran through the experiment in my browser to make sure everything worked and checked the database output, looked through updated code in this file to ensure that the implementation of the statistics was correct and that no text was updated |
+|Claude Opus 5.5 Medium | Implemented the experiment website, updated statistics in this report to use within-subject paired t-test design, created plots, helped brainstorm and implement code changes for Phase 2 | Ran through the experiment in my browser to make sure everything worked and checked the database output, looked through updated code in this file to ensure that the implementation of the statistics was correct and that no text was updated |
 
 I wrote all of the text in this report myself. AI tools were not used to write, rewrite or
 paraphrase it, and were not used to generate, alter, or impute any participant data. I take full
@@ -98,7 +98,9 @@ responsibility for the content of this report, including any errors introduced b
 
 # Load one phase's exported data and apply the exclusion rule. Returns NULL if that phase
 # has not been exported yet, which is how every section below knows to skip itself.
-read_phase <- function(id) {
+# min_referent_r: Phase 2's added exclusion (Changes from Phase 1, row 2): keep only participants
+# whose referent correlation with the ToM model is above this value. NULL (Phase 1) skips it.
+read_phase <- function(id, min_referent_r = NULL) {
   dir <- file.path("..", "data", "raw", id)
   if (!all(file.exists(file.path(dir, c("participants.csv", "trials.csv"))))) return(NULL)
   participants <- read_csv(file.path(dir, "participants.csv"), show_col_types = FALSE)
@@ -116,6 +118,19 @@ read_phase <- function(id) {
   keep <- complete |>
     left_join(n_main, by = "participant_id") |>
     filter(n_main_trials %in% 14)
+
+  if (!is.null(min_referent_r)) {
+    referent_ok <- trials |>
+      filter(task == "trial", participant_id %in% keep$participant_id) |>
+      select(participant_id, TrialId = trial_id,
+             lref_x = ref_a_x, lref_y = ref_a_y, rref_x = ref_b_x, rref_y = ref_b_y) |>
+      pivot_longer(lref_x:rref_y, names_to = "variable", values_to = "response") |>
+      left_join(model_predictions, by = c("TrialId", "variable")) |>
+      group_by(participant_id) |>
+      summarise(referent_r = suppressWarnings(score_fit(response, ToM)), .groups = "drop") |>
+      filter(referent_r > min_referent_r)
+    keep <- keep |> semi_join(referent_ok, by = "participant_id")
+  }
 
   list(participants = participants, trials = trials, errors = errors,
        complete = complete, keep = keep)
@@ -154,6 +169,81 @@ participant_scores <- function(d) {
     mutate(diff = score_a - score_b)
 }
 
+# Per-participant fits for belief (cg) and referent (lref, rref) inferences separately, from
+# responses in long form (participant_id, TrialId, variable, response). Used by the
+# participant-level figures, which put the original participants next to ours. For belief
+# inferences this gives the same scores as participant_scores().
+fits_by_type <- function(long) {
+  long |>
+    mutate(type = if_else(startsWith(variable, "cg"), "Belief", "Referent")) |>
+    left_join(model_predictions, by = c("TrialId", "variable")) |>
+    group_by(participant_id, type) |>
+    summarise(score_a = suppressWarnings(score_fit(response, ToM)),
+              score_b = suppressWarnings(score_fit(response, Deductive)),
+              .groups = "drop") |>
+    filter(!is.na(score_a), !is.na(score_b)) |>
+    mutate(diff = score_a - score_b)
+}
+
+replication_long <- function(d) {
+  d$trials |>
+    filter(task == "trial", participant_id %in% d$keep$participant_id) |>
+    select(participant_id, TrialId = trial_id, cg_x, cg_y,
+           lref_x = ref_a_x, lref_y = ref_a_y, rref_x = ref_b_x, rref_y = ref_b_y) |>
+    pivot_longer(cg_x:rref_y, names_to = "variable", values_to = "response")
+}
+replication_fits <- function(d) fits_by_type(replication_long(d))
+
+# The original participants' responses, from the authors' OSF archive (osf.io/h8qfy,
+# ProcessedData/Exp1_Participants.csv), already in the model's coordinates. Scored this way
+# they reproduce the paper's subject-level results: belief 0.586 vs 0.350 (45 of 60 fit
+# Model A better), referent 0.933 vs 0.933.
+original_long <- read_csv(file.path("..", "data", "original", "Exp1_Participants.csv"),
+                          show_col_types = FALSE) |>
+  select(participant_id = UserId, TrialId, cg_x:rref_y) |>
+  pivot_longer(cg_x:rref_y, names_to = "variable", values_to = "response")
+original_fits <- fits_by_type(original_long)
+
+# Item-level ("collapsed") analysis, as in the original's Exp1_AnalyzeResults.R (osf.io/h8qfy,
+# AnalysisFiles): average all participants' responses for each trial and trackpad coordinate
+# (28 trials x 6 = 168 values, 56 belief and 112 referent), then correlate those averages with
+# each model. CIs are basic bootstraps over items with 10,000 resamples and the original's
+# seeds. On the original data this reproduces the paper's estimates exactly (belief r = 0.947
+# ToM vs 0.561 deductive, difference 0.386; referent 0.994 vs 0.993) and its CIs to within
+# about 0.005 (the original draws the lower and upper bound from separate bootstrap runs).
+item_means <- function(long) {
+  long |>
+    group_by(TrialId, variable) |>
+    summarise(human = mean(response, na.rm = TRUE), .groups = "drop") |>
+    left_join(model_predictions, by = c("TrialId", "variable")) |>
+    mutate(type = if_else(startsWith(variable, "cg"), "Belief", "Referent"))
+}
+
+boot_basic <- function(data, stat, seed, R = 10000) {
+  set.seed(seed)
+  b <- boot::boot(data, stat, R = R)
+  ci <- boot::boot.ci(b, type = "basic")$basic[4:5]
+  tibble(estimate = b$t0, ci_low = ci[1], ci_high = ci[2])
+}
+
+# r with each model, by inference type and pooled over both types.
+item_corrs <- function(items) {
+  r_with <- function(model) function(d, i) cor(d$human[i], d[[model]][i])
+  by_type <- items |> mutate(group = type)
+  pooled  <- items |> mutate(group = "Overall")
+  bind_rows(by_type, pooled) |>
+    group_by(group) |>
+    reframe(bind_rows(boot_basic(pick(everything()), r_with("ToM"), 23754) |> mutate(model = "ToM model"),
+                      boot_basic(pick(everything()), r_with("Deductive"), 23754) |> mutate(model = "Deductive model"))) |>
+    rename(type = group)
+}
+
+# ToM r minus deductive r over the same items, by inference type.
+item_diff <- function(items) {
+  r_diff <- function(d, i) cor(d$ToM[i], d$human[i]) - cor(d$Deductive[i], d$human[i])
+  items |> group_by(type) |> reframe(boot_basic(pick(everything()), r_diff, 7582))
+}
+
 # The key statistic: mean paired difference (Model A minus Model B) with a 95% CI, the
 # paired t test, and d_z. NULL until at least two participants have scores.
 paired_test <- function(scores) {
@@ -190,12 +280,42 @@ comparison_plot <- function(...) {
     geom_pointrange(aes(ymin = ci_low, ymax = ci_high), size = 0.6) +
     geom_text(aes(y = ci_high, label = label), vjust = -0.8, size = 3, colour = "grey30") +
     scale_colour_manual(values = cols, guide = "none") +
-    labs(x = NULL, y = "ToM minus deductive model\n(per-participant r, belief inferences)") +
+    labs(x = NULL, y = "Difference in correlation with \nToM and deductive models per-participant") +
     theme_minimal(base_size = 12)
 }
 
+comparison_plot_with_points <- function(..., points = list()) {
+  studies <- list(...)
+  studies <- studies[!map_lgl(studies, is.null)]
+  df <- imap_dfr(studies, ~ mutate(.x, Study = .y)) |>
+    mutate(Study = factor(Study, levels = names(studies)), label = sprintf("n = %d", N))
+  cols <- setNames(c("grey55", "#1E6E76", "#B8792A")[seq_along(studies)], names(studies))
+
+  points <- points[!map_lgl(points, is.null) & names(points) %in% names(studies)]
+  point_layer <- NULL
+  if (length(points) > 0) {
+    pts_df <- imap_dfr(points, ~ tibble(Study = .y, diff = .x$diff)) |>
+      mutate(Study = factor(Study, levels = names(studies)))
+    point_layer <- geom_point(data = pts_df, aes(y = diff),
+                              position = position_jitter(width = 0.12, height = 0, seed = 251),
+                              alpha = 0.35, size = 5)
+  }
+
+  ggplot(df, aes(x = Study, y = estimate, colour = Study)) +
+    geom_hline(yintercept = 0, linetype = "dashed", colour = "grey60") +
+    point_layer +
+    geom_pointrange(aes(ymin = ci_low, ymax = ci_high), size = 1.5, linewidth = 1.5) +
+    geom_text(aes(y = Inf, label = label), vjust = 1.5, size = 10, colour = "grey30") +
+    # headroom above the highest point for the n labels
+    scale_y_continuous(expand = expansion(mult = c(0.05, 0.15))) +
+    scale_colour_manual(values = cols, guide = "none") +
+    labs(x = NULL, y = "Difference in correlation with \nToM and deductive models per-participant") +
+    theme_minimal(base_size = 28) +
+    theme(axis.text = element_text(size = 24))
+}
+
 phase1 <- read_phase(experiment_id)
-phase2 <- read_phase(experiment_id_phase2)
+phase2 <- read_phase(experiment_id_phase2, min_referent_r = 0.8)
 have_data   <- !is.null(phase1)
 have_phase2 <- !is.null(phase2)
 ```
@@ -229,7 +349,7 @@ bind_rows(
 ## Introduction
 In this project, I tried to replicate Experiment 1 of Jara-Ettinger & Rubio-Fernandez (2021). The original study found that adults can infer what information speakers know about objects based on the specificity of the language they use to refer to them. In Experiment 1, participants were shown four shapes on a screen and then told that speakers could not see one of the four objects and to guess what the speaker was referring to and what the speaker's blind spot was. They found that adults' predictions about which of the four shapes speakers did not know was better predicted by a theory of mind model that inferred speakers' knowledge from the specificity of their reference, than a deductive model that did not. The key statistic I aimed to replicate was that participants' belief predictions were better predicted by the theory of mind model compared to the deductive model (*t*(59) = 5.43, *p* < 0.0001 by paired *t* test) 
 
-This finding mattered to me since I am interested in thinking about frameworks to use to understand how children reason about speaker beliefs to learn words. To aid in that goal, I extended this study by replacing the speaker object reference with a 2-3 sentence long conversational segment inspired by CHILDES, a naturalistic corpus of what children hear, and replaced the objects with real-world objects that could be referred to across these segments.
+This finding mattered to me since I am interested in thinking about frameworks to use to understand how children reason about speaker beliefs to learn words. In pursuit of that goal, I initially planeed to extend this study by replacing the speaker object reference with a 2-3 sentence long conversational segment from CHILDES, a naturalistic corpus of what children hear, and replaced the objects with real-world objects that could be referred to across these segments.
 
 ## Methods
 
@@ -297,13 +417,6 @@ The study took 20 minutes in total.
 
 
 ### Methods addendum (post data collection)
-
-::: {.callout-tip icon=false}
-## Guidance
-
-Leave this section out of the version you preregister. After data collection, report the
-actual sample and any deviation from the plan above.
-:::
 
 #### Actual sample
 
@@ -390,24 +503,13 @@ if (nrow(demo) > 0) {
 
 #### Deviations from the preregistered plan
 
-::: {.callout-tip icon=false}
-## Guidance
-
-Any deviation from the preregistered plan above, or "None". Changes made after seeing data
-belong here even if they seem minor, together with the reason.
-:::
+None.
 
 ## Results
 
 ### Data preparation
 
-::: {.callout-tip icon=false}
-## Guidance
-
-Data preparation follows the analysis plan. Loading and exclusions are done by the shared
-analysis code under Key statistics (open "Show the analysis code"). Describe anything you did to
-the data beyond that.
-:::
+Data preparation followed the analysis plan.
 
 ### Confirmatory analysis
 
@@ -470,28 +572,463 @@ if (!is.null(rep)) {
 }
 ```
 
+
 ```{r}
-#| label: fig-comparison
-#| eval: !expr have_data
-#| fig-cap: "Mean per-participant difference in correlation with Model A (ToM) and Model B (deductive), belief inferences, original study and Phase 1 replication. Error bars are 95% confidence intervals; the original CIs are rebuilt from the reported statistics."
+#| label: fig-individual-fits
+#| eval: !expr have_data && !is.null(key)
+#| fig-cap: "Each participant's correlation with Model A (ToM) and Model B (deductive), belief inferences, original study and Phase 1 replication. Lines join one participant's two fits and are coloured by which model fits better; black points are means with 95% confidence intervals."
+#| fig-width: 12
+#| fig-height: 8
+# Same size as the saved PNG, so the text and point sizes look the same in both.
+study_fits <- bind_rows(
+  original_fits |> mutate(Study = "Original"),
+  replication_fits(phase1) |> mutate(Study = "Phase 1: replication")
+) |>
+  add_count(Study, type, name = "n") |>
+  mutate(Study = fct_inorder(sprintf("%s (n = %d)", Study, n)))
+fits_long <- study_fits |>
+  filter(type == "Belief") |>
+  mutate(better = if_else(diff > 0, "ToM model fits better", "Deductive model fits better")) |>
+  pivot_longer(c(score_a, score_b), names_to = "model", values_to = "r") |>
+  mutate(model = factor(model, levels = c("score_a", "score_b"),
+                        labels = c("ToM model", "Deductive model")))
+p_fits <- ggplot(fits_long, aes(x = model, y = r)) +
+  geom_hline(yintercept = 0, linetype = "dashed", colour = "grey60") +
+  geom_line(aes(group = participant_id, colour = better), alpha = 0.5, linewidth = 0.8) +
+  geom_point(aes(colour = better), size = 3, alpha = 0.7) +
+  stat_summary(fun.data = mean_cl_normal, colour = "black", size = 1.2, linewidth = 1.5,
+               position = position_nudge(x = c(-0.12, 0.12))) +
+  scale_colour_manual(values = c("ToM model fits better" = "#1E6E76", "Deductive model fits better" = "#B8792A"),
+                      breaks = c("ToM model fits better", "Deductive model fits better"), name = NULL) +
+  facet_wrap(~ Study) +
+  labs(x = NULL, y = "Per-participant correlation\nacross models") +
+  theme_minimal(base_size = 28) +
+  theme(axis.text = element_text(size = 24), legend.position = "bottom") +
+  guides(colour = guide_legend(override.aes = list(size = 5, linewidth = 1.5)))
+p_fits
+ggsave("per_participant_fits.png", p_fits, width = 12, height = 8, bg = "white", dpi = 300)
+```
+
+```{r}
+#| label: fig-subject-scatter
+#| eval: !expr have_data && !is.null(key)
+#| fig-cap: "Each participant's correlation with the deductive model (x) and the ToM model (y), for belief and referent inferences, original study and Phase 1 replication (after Fig. S2 of the original). Points above the diagonal fit the ToM model better."
 #| fig-width: 7
-#| fig-height: 4
-comparison_plot(Original = orig, `Phase 1: replication` = key)
+#| fig-height: 7
+# Fig. S2 used limits of 0 to 1; the lower limit is extended to show any negative correlations.
+lim <- c(min(0, study_fits$score_a, study_fits$score_b), 1)
+ggplot(study_fits |> filter(type == "Belief"), aes(x = score_b, y = score_a)) +
+  geom_abline(intercept = 0, slope = 1) +
+  geom_point() +
+  facet_wrap(~Study) +
+  scale_x_continuous("Correlation with\ndeductive model", limits = lim, breaks = seq(-1, 1, 0.25)) +
+  scale_y_continuous("Correlation with\nToM model", limits = lim, breaks = seq(-1, 1, 0.25)) +
+  theme_classic(base_size = 12) +
+  theme(aspect.ratio = 1)
 ```
 
 ### Exploratory analyses
 
-::: {.callout-tip icon=false}
-## Guidance
-
-Any follow-up analyses (optional). Label them clearly as exploratory: they were not planned, so
-they generate hypotheses rather than test them.
-:::
+In exploratory analyses, I first attempted to replicate all of the statistics and plots reported in the original experiment. I also attempted to use RMSE instead of a simple paired t-test.
 
 ```{r}
-#| label: exploratory
+#| label: exploratory-fit-measures
 #| eval: !expr have_data
-# Exploratory analyses go here.
+# Exploratory: the same model comparison with a second fit measure, and restricted to
+# participants who passed the comprehension check on their first attempt.
+#
+# RMSE: root mean squared distance between a participant's trackpad positions and the model's
+# predictions, over the same 28 values the correlation uses (lower is a better fit). Unlike r,
+# it also penalises responses that track the model's pattern but are shifted or compressed.
+# Computed for the same participants and inference types as the correlations.
+rmse_by_type <- function(long) {
+  long |>
+    mutate(type = if_else(startsWith(variable, "cg"), "Belief", "Referent")) |>
+    left_join(model_predictions, by = c("TrialId", "variable")) |>
+    filter(!is.na(response)) |>
+    group_by(participant_id, type) |>
+    summarise(rmse_a = sqrt(mean((response - ToM)^2)),
+              rmse_b = sqrt(mean((response - Deductive)^2)),
+              .groups = "drop")
+}
+model_fits <- function(long) inner_join(fits_by_type(long), rmse_by_type(long),
+                                        by = c("participant_id", "type"))
+
+# Comprehension-check attempts, from the quiz trials (one row per attempt).
+quiz_attempts <- trials |>
+  filter(task == "quiz") |>
+  group_by(participant_id) |>
+  summarise(attempts = max(attempt), .groups = "drop")
+first_try_ids <- quiz_attempts |> filter(attempts == 1) |> pull(participant_id)
+
+# "estimate [CI], t(df), p" for a paired t test of x - y; blank below two participants.
+fmt_paired <- function(x, y) {
+  if (length(x) < 2) return("")
+  tt <- t.test(x, y, paired = TRUE)
+  sprintf("%.3f [%.3f, %.3f], t(%.0f) = %.2f, p %s",
+          tt$estimate, tt$conf.int[1], tt$conf.int[2], tt$parameter, tt$statistic,
+          if (tt$p.value < 0.001) "< .001" else sprintf("= %.3f", tt$p.value))
+}
+
+p1_fits   <- model_fits(replication_long(phase1))
+orig_fits <- model_fits(original_long)
+fit_samples <- list(
+  "Original"                              = orig_fits,
+  "Phase 1: all analysed"                 = p1_fits,
+  "Phase 1: passed check on first try"    = p1_fits |> filter(participant_id %in% first_try_ids),
+  "Phase 1: needed more than one try"     = p1_fits |> filter(!participant_id %in% first_try_ids)
+)
+imap_dfr(fit_samples, ~ .x |>
+           group_by(Type = type) |>
+           summarise(N = n(),
+                     `r: ToM − deductive` = fmt_paired(score_a, score_b),
+                     `RMSE ToM` = mean(rmse_a), `RMSE deductive` = mean(rmse_b),
+                     # Ordered so that, as for r, a positive difference means ToM fits better.
+                     `RMSE: deductive − ToM` = fmt_paired(rmse_b, rmse_a),
+                     `ToM better (r / RMSE)` = sprintf("%d / %d", sum(score_a > score_b), sum(rmse_a < rmse_b)),
+                     .groups = "drop") |>
+           mutate(Sample = .y, .before = 1)) |>
+  arrange(Type) |>
+  knitr::kable(digits = 3, caption = "Exploratory: per-participant model comparison by correlation (higher is better) and RMSE (lower is better), for the original, all Phase 1 participants, and Phase 1 split by comprehension-check attempts. Differences are paired, with 95% CIs; positive means the ToM model fits better.")
+```
+
+Next, I did an ad-hoc split of the Phase 1 data to see if participants who took more than a single try on the comprehension check may have led to the null effect.
+```{r}
+#| label: fig-comprehension-fits
+#| eval: !expr have_data
+#| fig-cap: "Exploratory: mean per-participant correlation with the ToM and deductive models, belief inferences, for the original study, all Phase 1 participants, and only those who passed the comprehension check on their first try. Error bars are 95% confidence intervals."
+#| fig-width: 9
+#| fig-height: 5
+fit_samples[c("Original", "Phase 1: all analysed", "Phase 1: passed check on first try")] |>
+  imap_dfr(~ mutate(.x, Sample = sprintf("%s\n(n = %d)", .y, n_distinct(.x$participant_id)))) |>
+  filter(type == "Belief") |>
+  mutate(Sample = fct_inorder(str_replace(Sample, "Phase 1: ", "Phase 1:\n"))) |>
+  pivot_longer(c(score_a, score_b), names_to = "model", values_to = "r") |>
+  mutate(model = factor(model, levels = c("score_a", "score_b"),
+                        labels = c("ToM model", "Deductive model"))) |>
+  ggplot(aes(x = Sample, y = r, colour = model)) +
+  geom_hline(yintercept = 0, linetype = "dashed", colour = "grey60") +
+  stat_summary(fun.data = mean_cl_normal, position = position_dodge(width = 0.4),
+               size = 0.6, linewidth = 1) +
+  scale_colour_manual(values = c("ToM model" = "#1E6E76", "Deductive model" = "#B8792A"),
+                      name = NULL) +
+  labs(x = NULL, y = "Mean per-participant correlation\n(belief inferences)") +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "bottom")
+```
+
+Next, I did another ad-hoc split with both the original data and the phase 1 data to see if participants who have a higher correlation with the deductive model might have just be using the less complex deductive model to complete this task.
+```{r}
+#| label: fig-group-fits
+#| eval: !expr have_data
+#| fig-cap: "Exploratory: mean per-participant correlation with each model, belief inferences, for participants whose correlation was higher with the ToM model and those whose correlation was higher with the deductive model (on all trials, whether or not the difference is reliable), original study and Phase 1 replication. Error bars are 95% confidence intervals; faint points are individual participants."
+#| fig-width: 9
+#| fig-height: 5
+# The grouping guarantees each group fits its own model better; what the figure shows is how
+# big the gap is and how well each group is fit overall.
+group_fits <- list(Original = orig_fits, `Phase 1: replication` = p1_fits) |>
+  imap_dfr(~ mutate(.x, Study = .y)) |>
+  filter(type == "Belief") |>
+  mutate(Group = if_else(diff > 0, "ToM fits better", "Deductive fits better")) |>
+  add_count(Study, Group) |>
+  mutate(Group = sprintf("%s\n(n = %d)", Group, n),
+         Group = fct_reorder(Group, -diff)) |>
+  pivot_longer(c(score_a, score_b), names_to = "model", values_to = "r") |>
+  mutate(model = factor(model, levels = c("score_a", "score_b"),
+                        labels = c("ToM model", "Deductive model")))
+dodge <- position_dodge(width = 0.5)
+ggplot(group_fits, aes(x = Group, y = r, colour = model)) +
+  geom_hline(yintercept = 0, linetype = "dashed", colour = "grey60") +
+  geom_point(position = position_jitterdodge(jitter.width = 0.15, dodge.width = 0.5, seed = 251),
+             alpha = 0.25, size = 1.5) +
+  stat_summary(fun.data = mean_cl_normal, position = dodge, size = 0.6, linewidth = 1) +
+  facet_wrap(~ Study, scales = "free_x") +
+  scale_colour_manual(values = c("ToM model" = "#1E6E76", "Deductive model" = "#B8792A"),
+                      name = NULL) +
+  labs(x = NULL, y = "Mean per-participant correlation\n(belief inferences)") +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "bottom")
+```
+
+I looked at how adding a correlation threshold on the referent task would affect our hypotheses. At around 
+```{r}
+#| label: fig-referent-threshold
+#| eval: !expr have_data
+#| fig-cap: "Exploratory: mean per-participant correlation of belief inferences with each model, keeping only Phase 1 participants whose referent correlation with the ToM model is at or above the threshold on the x axis. Ribbons are 95% confidence intervals (shown where at least 5 participants remain); numbers along the bottom give how many participants remain at that threshold. The dashed line marks the 0.8 cutoff planned for Phase 2."
+#| fig-width: 9
+#| fig-height: 5
+# Each participant's referent correlation with the ToM model (the two models' referent
+# predictions are nearly identical, so the deductive model gives almost the same values),
+# joined to their belief correlations with both models.
+referent_r <- p1_fits |> filter(type == "Referent") |> select(participant_id, referent_r = score_a)
+belief_r   <- p1_fits |> filter(type == "Belief") |> select(participant_id, score_a, score_b)
+by_referent <- inner_join(referent_r, belief_r, by = "participant_id")
+
+thresholds <- seq(floor(min(by_referent$referent_r) * 20) / 20, max(by_referent$referent_r), by = 0.01)
+threshold_fits <- map_dfr(thresholds, function(th) {
+  kept <- filter(by_referent, referent_r >= th)
+  pivot_longer(kept, c(score_a, score_b), names_to = "model", values_to = "r") |>
+    group_by(model) |>
+    summarise(n = n(), mean = mean(r),
+              ci_low  = if (n() >= 5) mean(r) - qt(0.975, n() - 1) * sd(r) / sqrt(n()) else NA_real_,
+              ci_high = if (n() >= 5) mean(r) + qt(0.975, n() - 1) * sd(r) / sqrt(n()) else NA_real_,
+              .groups = "drop") |>
+    mutate(threshold = th)
+}) |>
+  mutate(model = factor(model, levels = c("score_a", "score_b"),
+                        labels = c("ToM model", "Deductive model")))
+
+# Participants remaining, labelled every 0.05 so the labels don't overlap.
+n_labels <- tibble(threshold = seq(ceiling(min(thresholds) * 20) / 20, max(thresholds), by = 0.05)) |>
+  mutate(n = map_int(threshold, ~ sum(by_referent$referent_r >= .x - 1e-9)))
+y_min <- min(threshold_fits$ci_low, threshold_fits$mean, 0, na.rm = TRUE)
+
+ggplot(threshold_fits, aes(x = threshold, y = mean, colour = model, fill = model)) +
+  geom_hline(yintercept = 0, linetype = "dashed", colour = "grey60") +
+  geom_vline(xintercept = 0.8, linetype = "dashed") +
+  geom_ribbon(aes(ymin = ci_low, ymax = ci_high), alpha = 0.15, colour = NA) +
+  geom_step(linewidth = 1) +
+  geom_label(data = n_labels, aes(x = threshold, y = y_min - 0.08, label = n),
+             inherit.aes = FALSE, size = 2.6, colour = "grey30", fill = "white",
+             label.size = 0, label.padding = unit(0.1, "lines")) +
+  scale_x_continuous(breaks = seq(-1, 1, 0.1)) +
+  scale_colour_manual(values = c("ToM model" = "#1E6E76", "Deductive model" = "#B8792A"), name = NULL) +
+  scale_fill_manual(values = c("ToM model" = "#1E6E76", "Deductive model" = "#B8792A"), name = NULL) +
+  labs(x = "Minimum referent correlation with ToM model",
+       y = "Mean per-participant correlation\n(belief inferences)") +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "bottom")
+```
+
+I also visualized within-participant correlation with each model.
+```{r}
+# Exploratory: can participants be split post hoc into those who reason like the ToM model and
+# those who reason like the deductive model? Belief inferences only, three ways:
+#
+# 1. Per-participant classification. Bootstrap each participant's 14 trials (2,000 resamples,
+#    keeping a trial's x and y together) for a 95% CI on their r difference; "ToM" or "deductive"
+#    if the CI excludes zero, otherwise "unclear". With 14 trials and two models whose belief
+#    predictions are correlated, many participants are expected to be unclear.
+# 2. Held-out test of the split. Randomly split each participant's trials into halves (500
+#    times), pick the better-fitting model on one half, and score it on the other. If every
+#    participant really used the same strategy, choosing per participant only adds noise and
+#    should not beat assigning everyone the ToM model; if some used the deductive strategy, it
+#    should. Paired t test over participants of the held-out gain, averaged over splits.
+#    The split-half correlation of the r difference across participants is also reported
+#    (permutation p); note that it can be positive just because participants differ in how noisy
+#    they are, so it shows stable differences, not necessarily two strategies.
+# 3. Group comparison. Participants grouped by which model fits them better on all trials,
+#    with each group's mean correlation with both models.
+belief_long <- function(long) {
+  long |>
+    filter(startsWith(variable, "cg")) |>
+    left_join(model_predictions, by = c("TrialId", "variable")) |>
+    semi_join(fits_by_type(long) |> filter(type == "Belief"), by = "participant_id")
+}
+r_diff <- function(d) score_fit(d$response, d$ToM) - score_fit(d$response, d$Deductive)
+
+classify_participants <- function(b, R = 2000, seed = 251) {
+  set.seed(seed)
+  b |>
+    group_by(participant_id) |>
+    group_modify(function(d, key) {
+      rows <- split(seq_len(nrow(d)), d$TrialId)
+      boots <- replicate(R, {
+        s <- sample(names(rows), replace = TRUE)
+        suppressWarnings(r_diff(d[unlist(rows[s]), ]))
+      })
+      ci <- quantile(boots, c(0.025, 0.975), na.rm = TRUE)
+      tibble(diff = r_diff(d), ci_low = ci[1], ci_high = ci[2])
+    }) |>
+    ungroup() |>
+    mutate(class = case_when(ci_low > 0 ~ "ToM", ci_high < 0 ~ "Deductive", TRUE ~ "Unclear"))
+}
+
+split_halves <- function(b, n_splits = 500, seed = 251) {
+  set.seed(seed)
+  b <- arrange(b, participant_id, TrialId, variable)
+  ids <- split(b$TrialId, b$participant_id) |> map(unique)
+  map_dfr(seq_len(n_splits), function(s) {
+    h1 <- imap_dfr(ids, ~ tibble(participant_id = .y, TrialId = sample(.x, length(.x) %/% 2)))
+    b |>
+      mutate(half = if_else(paste(participant_id, TrialId) %in% paste(h1$participant_id, h1$TrialId),
+                            "h1", "h2")) |>
+      group_by(participant_id, half) |>
+      summarise(a = suppressWarnings(score_fit(response, ToM)),
+                d = suppressWarnings(score_fit(response, Deductive)), .groups = "drop") |>
+      pivot_wider(names_from = half, values_from = c(a, d)) |>
+      mutate(split = s)
+  })
+}
+
+# Held-out fit of each participant's own model (chosen on the other half, both directions),
+# against the ToM and deductive models for everyone; averaged over splits per participant.
+held_out <- function(halves) {
+  halves |>
+    mutate(own_h2 = if_else(a_h1 - d_h1 >= 0, a_h2, d_h2),
+           own_h1 = if_else(a_h2 - d_h2 >= 0, a_h1, d_h1)) |>
+    group_by(participant_id) |>
+    summarise(own = mean(c(own_h1, own_h2), na.rm = TRUE),
+              tom = mean(c(a_h1, a_h2), na.rm = TRUE),
+              ded = mean(c(d_h1, d_h2), na.rm = TRUE), .groups = "drop")
+}
+
+split_half_r <- function(halves, n_perm = 2000, seed = 251) {
+  per_split <- split(halves, halves$split) |>
+    map(~ list(x = .x$a_h1 - .x$d_h1, y = .x$a_h2 - .x$d_h2))
+  mean_r <- function(perm) mean(map_dbl(per_split, ~ cor(.x$x, .x$y[perm], use = "complete.obs")))
+  n <- length(per_split[[1]]$x)
+  obs <- mean_r(seq_len(n))
+  set.seed(seed)
+  null <- replicate(n_perm, mean_r(sample(n)))
+  tibble(r = obs, p = mean(null >= obs))
+}
+
+strategy <- map(list(Original = original_long, `Phase 1: replication` = replication_long(phase1)),
+                function(long) {
+                  b <- belief_long(long)
+                  halves <- split_halves(b)
+                  list(class = classify_participants(b), held = held_out(halves),
+                       reliability = split_half_r(halves))
+                })
+
+imap_dfr(strategy, ~ .x$class |>
+           count(class) |>
+           mutate(class = factor(class, levels = c("ToM", "Deductive", "Unclear"))) |>
+           complete(class, fill = list(n = 0)) |>
+           mutate(value = sprintf("%d (%.0f%%)", n, 100 * n / sum(n))) |>
+           select(class, value) |>
+           pivot_wider(names_from = class, values_from = value) |>
+           mutate(Study = .y, .before = 1)) |>
+  knitr::kable(caption = "Exploratory: participants whose per-participant bootstrapped 95% CI on the r difference (ToM − deductive, belief inferences) lies above zero (ToM), below zero (deductive), or includes zero (unclear).")
+```
+
+```{r}
+#| label: fig-strategy-split
+#| eval: !expr have_data
+#| fig-cap: "Exploratory: each participant's difference in correlation with the ToM and deductive models (belief inferences), with a 95% CI from bootstrapping their trials, original study and Phase 1 replication. Colour shows whether the CI lies above zero, below zero, or includes it."
+#| fig-width: 9
+#| fig-height: 6
+imap_dfr(strategy, ~ mutate(.x$class, Study = .y)) |>
+  mutate(class = factor(class, levels = c("ToM", "Deductive", "Unclear")),
+         participant = fct_reorder(paste(Study, participant_id), diff)) |>
+  ggplot(aes(x = diff, y = participant, colour = class)) +
+  geom_vline(xintercept = 0, linetype = "dashed", colour = "grey60") +
+  geom_pointrange(aes(xmin = ci_low, xmax = ci_high), size = 0.2) +
+  facet_wrap(~ Study, scales = "free_y") +
+  scale_colour_manual(values = c(ToM = "#1E6E76", Deductive = "#B8792A", Unclear = "grey60"),
+                      name = NULL) +
+  labs(x = "Difference in correlation with ToM and deductive models (belief)", y = NULL) +
+  theme_minimal(base_size = 12) +
+  theme(axis.text.y = element_blank(), panel.grid.major.y = element_blank(),
+        legend.position = "bottom")
+```
+
+I tried to replicate all of the analyses and plots from experiment 1 of the original study.
+```{r}
+#| label: exp1-reproduction
+#| eval: !expr have_data
+# The original's other Experiment 1 analyses (Exp1_AnalyzeResults.R), run on the original data
+# and ours: collapsed (item-level) correlations and their difference, and the per-participant
+# tests for both inference types.
+items_by_study <- list(Original = item_means(original_long),
+                       `Phase 1: replication` = item_means(replication_long(phase1)))
+item_r  <- imap_dfr(items_by_study, ~ item_corrs(.x) |> mutate(Study = .y))
+item_dr <- imap_dfr(items_by_study, ~ item_diff(.x) |> mutate(Study = .y))
+subj_r  <- bind_rows(original_fits |> mutate(Study = "Original"),
+                     replication_fits(phase1) |> mutate(Study = "Phase 1: replication"))
+
+fmt_ci <- function(est, lo, hi) sprintf("%.2f [%.2f, %.2f]", est, lo, hi)
+collapsed <- item_r |>
+  filter(type != "Overall") |>
+  transmute(Study, type, model, value = fmt_ci(estimate, ci_low, ci_high)) |>
+  pivot_wider(names_from = model, values_from = value) |>
+  left_join(item_dr |> transmute(Study, type, `ToM − deductive` = fmt_ci(estimate, ci_low, ci_high)),
+            by = c("Study", "type")) |>
+  mutate(Level = "Collapsed (r of item means)", `Fit ToM better` = "")
+per_participant <- subj_r |>
+  group_by(Study, type) |>
+  summarise(tt = list(t.test(score_a, score_b, paired = TRUE)),
+            a = mean(score_a), b = mean(score_b), n = n(), wins = sum(diff > 0), .groups = "drop") |>
+  mutate(Level = "Per participant (mean r)",
+         `ToM model` = sprintf("%.2f", a), `Deductive model` = sprintf("%.2f", b),
+         `ToM − deductive` = map_chr(tt, ~ sprintf("%s, t(%.0f) = %.2f, p %s",
+                                                   fmt_ci(.x$estimate, .x$conf.int[1], .x$conf.int[2]),
+                                                   .x$parameter, .x$statistic,
+                                                   if (.x$p.value < 0.001) "< 0.001"
+                                                   else sprintf("= %.2g", .x$p.value))),
+         `Fit ToM better` = sprintf("%d of %d (%.0f%%)", wins, n, 100 * wins / n))
+bind_rows(collapsed, per_participant) |>
+  mutate(Type = type) |>
+  arrange(Type, desc(Level), Study) |>
+  select(Type, Level, Study, `ToM model`, `Deductive model`, `ToM − deductive`, `Fit ToM better`) |>
+  knitr::kable(caption = "Experiment 1 analyses of the original, run on the original data and on Phase 1: correlations with each model computed on item means (collapsed over participants; bootstrapped 95% CIs) and per participant (mean r; paired t test).")
+
+item_r |>
+  filter(type == "Overall") |>
+  transmute(Study, model, r = fmt_ci(estimate, ci_low, ci_high)) |>
+  pivot_wider(names_from = model, values_from = r) |>
+  knitr::kable(caption = "Collapsed correlation with each model over all 168 item means (belief and referent pooled), bootstrapped 95% CIs.")
+```
+
+```{r}
+#| label: fig-item-scatter
+#| eval: !expr have_data
+#| fig-cap: "Average participant judgment for each trial and trackpad coordinate against each model's prediction, original study and Phase 1 replication (after Fig. 3A of the original). Lines are least-squares fits."
+#| fig-width: 8
+#| fig-height: 8
+imap_dfr(items_by_study, ~ mutate(.x, Study = .y)) |>
+  pivot_longer(c(ToM, Deductive), names_to = "model", values_to = "prediction") |>
+  mutate(model = factor(model, levels = c("ToM", "Deductive"),
+                        labels = c("Theory of mind model", "Deductive model"))) |>
+  ggplot(aes(x = prediction, y = human)) +
+  geom_smooth(method = "lm", formula = y ~ x, se = FALSE, colour = "black") +
+  geom_point(aes(fill = type), shape = 21, alpha = 0.75, size = 2) +
+  facet_grid(Study ~ model) +
+  scale_fill_manual(values = c(Belief = "#7190C6", Referent = "#F27979"), name = NULL) +
+  labs(x = "Model predictions", y = "Participant judgments") +
+  theme_classic(base_size = 12) +
+  theme(aspect.ratio = 1, legend.position = "bottom")
+```
+
+```{r}
+#| label: fig-item-corrs
+#| eval: !expr have_data
+#| fig-cap: "Collapsed (item-level) correlation with each model by inference type, original study and Phase 1 replication (after Fig. 3B of the original). Error bars are bootstrapped 95% CIs."
+#| fig-width: 7
+#| fig-height: 6
+item_r |>
+  filter(type != "Overall") |>
+  mutate(type = factor(type, levels = c("Referent", "Belief")),
+         model = factor(model, levels = c("ToM model", "Deductive model"))) |>
+  ggplot(aes(x = type, y = estimate, fill = type)) +
+  geom_col() +
+  geom_errorbar(aes(ymin = ci_low, ymax = ci_high), width = 0.2) +
+  facet_grid(Study ~ model) +
+  scale_fill_manual(values = c(Belief = "#7190C6", Referent = "#F27979"), guide = "none") +
+  labs(x = NULL, y = "Correlation") +
+  theme_classic(base_size = 12)
+```
+
+```{r}
+#| label: fig-subject-tom
+#| eval: !expr have_data
+#| fig-cap: "Each participant's correlation with the ToM model for referent (x) and belief (y) inferences, original study and Phase 1 replication (after Fig. S1 of the original). The red X marks the mean."
+#| fig-width: 8
+#| fig-height: 4.5
+subj_tom <- subj_r |>
+  select(Study, participant_id, type, score_a) |>
+  pivot_wider(names_from = type, values_from = score_a) |>
+  filter(!is.na(Belief), !is.na(Referent))
+ggplot(subj_tom, aes(x = Referent, y = Belief)) +
+  geom_point(alpha = 0.75) +
+  geom_point(data = summarise(subj_tom, Referent = mean(Referent), Belief = mean(Belief), .by = Study),
+             shape = 4, colour = "red", size = 5, stroke = 2) +
+  facet_wrap(~ Study) +
+  scale_x_continuous("Correlation with referents", limits = c(-1, 1)) +
+  scale_y_continuous("Correlation with beliefs", limits = c(-1, 1)) +
+  theme_classic(base_size = 12) +
+  theme(aspect.ratio = 1)
 ```
 
 ```{r}
@@ -509,98 +1046,45 @@ if (nrow(errors) > 0) {
 
 ### Summary of replication attempt
 
-::: {.callout-tip icon=false}
-## Guidance
-
-Open with one paragraph summarizing the result of the key analysis and your assessment of
-whether the original finding replicated, partially replicated, or failed to replicate. Base
-that judgment on the replication assessment above: the size of the effect relative to the
-original, not just the p value.
-:::
+In this study, I attempted to replicate Jara-Ettinger & Rubio-Fernandez (2021) that examined whether the way in which participants represent beliefs about what objects a person speaking can see can be modeled with a theory-of-mind model that accounted for the specificity of their language. Across 60 participants, the original study found that participant beliefs were more correlated with a theory-of-mind model compared to a deductive model that did not account for the specificity of speakers' language ($p$<.0001, $d$=0.70). I attempted to replicate this study across 20 participants to find the original effect with 80% power. In my replication, participants' beliefs were not differently predicted by the theory-of-mind model or the deductive model ($p$=.98, $d$=-0.01). Given the closeness of the found effect size to zero and the high p-value, my assessment was that this study failed to replicate.
 
 ### Commentary
 
-::: {.callout-tip icon=false}
-## Guidance
+In exploratory analyses, I attempted to replicate additional analyses that the original authors conducted and to filter participants based on additional attention checks. Interestingly, correlation with the theory-of-mind and deductive models were lower within-participant even for referent inference, a task that does not require any reasoning about how specific participants' language is. This analysis suggests that some participants may have not fully understood the task or may be satisficing and not actually answering truthfully. However, filtering to only participants who completed the comprehension check on the first try did not increase the found effect size, suggesting that additional questions may be required to fully capture participant comprehension. An exploratory analysis splitting the participants based on which model they were better predicted by did find that 9 out of 20 participants' data was better predicted by the deductive model. 
 
-Open-ended commentary, none of it long: (a) what the exploratory analyses suggest; (b) what the
-replication means, for example whether the differences between your study and the original are
-definitely, plausibly, or unlikely to be moderators of the result; and (c) any objections or
-challenges raised by you or the original authors.
-:::
+These analyses and this replication broadly might indicate that some people deploy theory-of-mind when reasoning about speaker beliefs while others do not, and that the difference between the number of people who choose either strategy may not be significant. The difference in platform, MTurk versus Prolific, is unlikely to have moderated these results, especially as participants had to complete the same comprehension check across platforms. The change in sample size could have plausibly moderated these results, reducing the power required to detect a smaller effect. 
 
 # Phase 2: Extension
 
-::: {.callout-tip icon=false}
-## Guidance: choosing your extension
-
-Follow the Extension guidelines page on Canvas. In brief:
-
-- **By default the extension is a best-practices modification of your Phase 1 experiment.** If
-  your replication did not succeed, it is a **rescue**: address the plausible reasons for the
-  failure. If it did succeed, it is an **upgrade**: make the estimate more precise. Typical
-  changes are better or more reliable measurement, more trials, a within-participant design
-  where that is legitimate, comprehension and manipulation checks, clearer instructions, or a
-  larger or better-targeted sample.
-- **If your scientific extension pitch was approved at Milestone 3 and your replication
-  succeeded, propose that instead:** the original conditions rerun unchanged, plus the one
-  added condition or manipulation, with a power analysis for the new comparison.
-- On either track you may add exploratory measures **at the end** of the study.
-- Every change is listed and tagged by category below; everything else stays identical.
-
-State your track on the line below, and delete the others.
-:::
-
-**Track:** Best-practices upgrade / Best-practices rescue / Scientific extension (approved at Milestone 3)
+Best-practices rescue
 
 ## Rationale
 
-::: {.callout-tip icon=false}
-## Guidance
+There are multiple plausible reasons why Phase 1 may have not reproduced the original result. First, my sample size may have been too small to detect the true effect. I chose my original sample size so as to detect the original reported effect size which may have been inflated with 80% power, meaning I did not have enough power to detect a true smaller effect. To address this, I will choose a sample size that can detect an effect half the size of the one originally reported with 80% power. Second, participants may have not been answering truthfully all the time. For example, some participants did not move the trackpad to change the default blind spot on every trial. To address this, I will require participants to move both trackpads (to select a referent and to select a blind spot) on every trial before proceeding. Similarly, some participants may have not fully processed the utterance on each trial as indicated by the lower reference correlation compared to the original study. I will add an exclusion criterion to exclude participants whose reference correlation is lower than 0.8. 
 
-One or two paragraphs. For a rescue: what are the plausible reasons Phase 1 did not reproduce the
-original result, and how does each change address one of them? For an upgrade: where is the
-Phase 1 estimate least precise or least trustworthy, and how will the changes improve it? For a
-scientific extension: what question does the added condition answer, and why does it follow from
-the original finding?
-:::
+Third, some participants may have simply adopted the less computationally intensive strategy that is captured by our deductive model. To understand if that is the case, I will add a funnel debrief at the end of the experiment where participants provide open responses about how they decided what the speakers' blind spot was and how they interpreted ambiguous naming instances. In exploratory analyses, I will measure whether participants who say they used word choice have responses that correlate more with the theory-of-mind model compared to the deductive model. Fourth, it is possible that some participants did not fully comprehend our task, especially how participants' blind spots were the same across each pair of events. To address this, I will add another question to the comprehension quiz where participants answer where the blind spot is in a second event, given the blind spot in a first event. Finally, it is possible that our key analyses, a paired t-test, is not robust enough to capture individual differences in variance. To be able to account for that variance, I plan to add an exploratory model that looks at the ELPD difference of the theory-of-mind model and the deductive model in predicting participant data.
 
 ## Changes from Phase 1
 
-::: {.callout-tip icon=false}
-## Guidance
-
-Every change from the Phase 1 experiment, one per row, each tagged with a category: Measurement,
-Trials, Design, Checks, Instructions, Sample, Added condition (scientific track only), or
-Exploratory measure (end of study only). If it is not in this table, it does not change: same
-materials, wording, procedure, exclusion rule and analysis. The rows below are examples for the
-demo; replace them with yours.
-:::
 
 | # | Category | Phase 1 | Phase 2 | Why |
 |---|---|---|---|---|
-| 1 | Sample | 27 analysed participants | 300 analysed participants (150 per frame) | Phase 1's interval was too wide to distinguish the original effect from a much smaller one. |
-| 2 | Checks | No comprehension check | After the choice, participants say how many people are at risk (600) | Confirms participants read the scenario; failures are reported, and excluded only if preregistered. |
-| 3 | Exploratory measure | None | At the end: "How confident are you in your choice?" (1–7) | Exploratory only; collected after every confirmatory measure. |
+| 1 | Sample | 20 analyzed participants | 67 analyzed participants | Phase 1's interval was too wide to distinguish the original effect from a much smaller one. |
+| 2 | Trial continuation requirement | None | Participants must move all the track pads on each trial to move ahead. | Ensures participants attempt to answer truthfully on every trial even when they are guessing |
+| 3 | Exclusion criteria | Completion, model fit possible | Completion, model fit possible, reference model correlation above 0.8 | Ensures participants are reading and understanding the utterances since the reference model only tests comprehension. |
+| 4 | Checks | Comprehension check required to be passed | Additional question that asks participants what the blind spot across a pair of trials is | Confirms participants understand that the blind spot if the same across each pair of events. |
+| 5 | Exploratory measure | None | At the end: "How did you decide where the speaker's blind spot was?" | Exploratory only; collected after every confirmatory measure. |
+| 6 | Exploratory analysis | None | Measure whether ELPD predictivity is greater for the theory-of-mind model compared to the deductive model; test whether participants who report using word choice to make decisions in the task fit theory-of-mind model better | Exploratory only. |
 
 Everything not listed above is identical to Phase 1.
 
 ## Power and sample
 
-::: {.callout-tip icon=false}
-## Guidance
-
-Justify the Phase 2 sample, and **state how you expect the estimate and its precision to compare
-with Phase 1**. For an upgrade, plan the sample around the confidence interval you want; for a
-rescue, around the power to detect the original effect, or the smallest effect you would still
-consider a successful replication; for a scientific extension, around the power to detect the new
-comparison. Set `phase2_n_per_group` in the code below; the table uses Phase 1's estimate if you
-have it and the original's otherwise.
-:::
+I chose a sample of 67 to be able to detect an effect size of 0.35, half of the original reported effect size, with 80% power. I expect that the estimate will be around the same as that as phase 1 and that the precision will higher with a confidence interval half as wide.
 
 ```{r}
 #| label: phase2-power
-phase2_n <- 150   # planned analysed participants in Phase 2 (each scored against both models)
+phase2_n <- 67  # planned analysed participants in Phase 2 (each scored against both models)
 
 p1_scores <- if (have_data) participant_scores(phase1)
 p1_stats  <- if (have_data) paired_test(p1_scores)
@@ -646,18 +1130,9 @@ tibble(
 
 ## Analysis plan
 
-::: {.callout-tip icon=false}
-## Guidance
+**Key analysis of interest.** Participants' performance on the belief task has a higher correlation with a theory-of-mind model as compared to a deductive model, tested with a paired t-test comparing the per-participant correlation difference. The effect size is the mean difference divided by the standard deviation of the differences, with a 95% confidence interval. I will also report a pooled estimate across phases.
 
-The confirmatory analysis for Phase 2, written before Phase 2 data collection. On the
-best-practices tracks this is normally the same key test as Phase 1, run on the Phase 2 data
-alone; say whether you will also report a pooled estimate across phases, and label it
-exploratory if so. On the scientific track, specify the test for the new comparison. Name the
-exclusion rule (unchanged unless it is in the Changes table) and list any exploratory measures.
-
-Run Phase 2 under a new `EXPERIMENT.id` in `experiment.js` (for example `smith2016-phase2`) and
-set `experiment_id_phase2` at the top of this file to match, so the two phases' data never mix.
-:::
+In an exploratory analysis, I will also measure the ELPD difference between how the theory-of-mind model and the deductive model fit within-participant data. I will predict each participant's data using a leave-one-out trial method. I will assume that the data follows a gaussian distribution for the likelihood. For the regression, I will include random intercepts for participants and the trial id, and a by-participant random slope for the model value. I will choose loose priors, such as setting the slope to be N(0,1).
 
 ## Results
 
@@ -722,7 +1197,7 @@ should be public; if something cannot be shared, say what and why.
 :::
 
 The experiment code, the anonymized data, and the code that produces every number in this
-report are available at <https://github.com/psych251/your-repo>. The experiment itself can be
-taken at <https://psych251.github.io/your-repo/>. The data contain no names, email addresses,
+report are available at https://github.com/psych251/jara-ettinger2021. The experiment itself can be
+taken at https://psych251.github.io/jara-ettinger2021/. The data contain no names, email addresses,
 IP addresses, or Prolific IDs; the file linking participants to their Prolific IDs is kept
 privately for payment and is not shared.

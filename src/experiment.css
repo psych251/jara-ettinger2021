@@ -25,5 +25,6 @@
 .pad-prompt { font-family: "Times New Roman", serif; font-size: 14px; line-height: 1.2; min-height: 3.6em; margin-bottom: 4px; }
 .pad { position: relative; background: #d3d3d3; cursor: pointer; touch-action: none; user-select: none; }
 .pad-dot { position: absolute; border-radius: 50%; pointer-events: none; }
+.pad-hint { font-size: 14px; color: #666; margin: 8px 0 0; }
 .pad[data-pad="cg"] .pad-dot { background: #0000ff; }
 .pad[data-pad="left"] .pad-dot, .pad[data-pad="right"] .pad-dot { background: #ff0000; }

@@ -11,15 +11,19 @@
  *              referent in display B (ref_b_x/y), and the speaker's blind spot (cg_x/y). All in
  *              canonical orientation, 0-1, x left->right, y top->bottom (as in the original data).
  *              Raw on-screen positions are kept as screen_lref_*, screen_rref_*, screen_cg_*.
- *   Structure: tutorial (the original 14 slides) -> 6-question comprehension check, repeated until
+ *   Structure: tutorial (the original 14 slides) -> 7-question comprehension check, repeated until
  *              all answers are correct -> 14 trials, self-paced, no time limit.
+ *   Phase 2:   (see "Changes from Phase 1" in the report) Continue stays disabled on each trial
+ *              until all three markers have been moved; a seventh quiz question checks that the
+ *              blind spot is the same in both events of a trial; an optional open question after
+ *              the trials asks how participants decided where the blind spot was (task "strategy_text").
  *   Random:    trial order shuffled per participant; on every trial the two displays are randomly
  *              ordered left/right (left_counterbalance: 1 = A on the left, as in the original) and
  *              rotated 0-3 quarter turns clockwise (stim_rotation, same coding as the original).
  *   Exclusion: none beyond passing the comprehension check (as in the original Exp. 1).
  *              quiz attempts are recorded (task "quiz": attempt, n_wrong, passed).
  *
- * Timeline: consent -> preload -> welcome -> [tutorial -> quiz]* -> trials -> age -> comments -> debrief
+ * Timeline: consent -> preload -> welcome -> [tutorial -> quiz]* -> trials -> strategy -> age -> comments -> debrief
  */
 
 // ---------------------------------------------------------------------------
@@ -30,7 +34,7 @@ window.TEMPLATE_VERSION = "0.1.0";
 const EXPERIMENT = {
   // Firestore path: experiments/<id>/participants/... Change it when you start a new study
   // so pilot data and real data never mix (e.g. "smith2016-pilot-a", "smith2016-final").
-  id: "jara-ettinger2021-phase1",
+  id: "jara-ettinger2021-phase2-pilot",
 
   // Trials per Firestore write. 1 = save every trial the moment it finishes (dropouts leave
   // partial data). About 25 writes per participant at 1, far inside the free tier.
@@ -119,7 +123,8 @@ function padHtml(name, prompt) {
 }
 
 // Wire every .pad on the page; returns the live state { name: { x, y, touched } } with x, y in 0-1.
-function wirePads(root) {
+// onMove (optional) is called after every marker move.
+function wirePads(root, onMove = () => {}) {
   const state = {};
   root.querySelectorAll(".pad").forEach((pad) => {
     const name = pad.dataset.pad;
@@ -132,6 +137,7 @@ function wirePads(root) {
       dot.style.left = cx - MIN + "px";
       dot.style.top = cy - MIN + "px";
       state[name] = { x: (cx - MIN) / RANGE, y: (cy - MIN) / RANGE, touched: true };
+      onMove();
     };
     pad.addEventListener("pointerdown", (e) => { pad.setPointerCapture(e.pointerId); move(e); e.preventDefault(); });
     pad.addEventListener("pointermove", (e) => { if (pad.hasPointerCapture(e.pointerId)) move(e); });
@@ -306,6 +312,9 @@ function wirePads(root) {
       choices: ["is always trying to be helpful.", "will sometimes mislead me on purpose."] },
     { name: "q6", title: "I will figure out what my virtual partner can see by...", correct: "c",
       choices: ["looking at all four figures.", "looking at what the virtual partner says.", "looking at both."] },
+    // Phase 2 addition: the blind spot is shared across the two events of a trial.
+    { name: "q7", title: "If my virtual partner cannot see the top-left corner in the first event of a trial, then in the second event of that trial...", correct: "a",
+      choices: ["he cannot see the top-left corner either.", "he cannot see a different corner.", "his blind spot could be any corner."] },
   ];
   let quizAttempt = 0;
   let quizPassed = false;
@@ -374,11 +383,24 @@ function wirePads(root) {
             </div>
             <div class="pad-row">${padHtml("cg", "Where is the blind spot?")}</div>
           </div>
+          <p class="pad-hint">Move all three markers to continue.</p>
         </div>`;
     },
     choices: ["Continue"],
     save_trial_parameters: { stimulus: false },
-    on_load: () => { pads = wirePads(jsPsych.getDisplayElement()); },
+    // Phase 2: Continue is disabled until all three markers have been moved at least once.
+    on_load: () => {
+      const el = jsPsych.getDisplayElement();
+      const button = el.querySelector("#jspsych-html-button-response-btngroup button");
+      const hint = el.querySelector(".pad-hint");
+      button.disabled = true;
+      pads = wirePads(el, () => {
+        if (Object.values(pads).every((p) => p.touched)) {
+          button.disabled = false;
+          hint.style.visibility = "hidden";
+        }
+      });
+    },
     data: { task: "trial" },
     on_finish: (data) => {
       const t = jsPsych.evaluateTimelineVariable("item");
@@ -420,7 +442,17 @@ function wirePads(root) {
   };
 
   // -------------------------------------------------------------------------
-  // 5. Age (the only demographic the original collected) and comments
+  // 5. Phase 2 exploratory question, after every confirmatory measure. Optional, as the consent
+  //    text promises participants may decline any question.
+  // -------------------------------------------------------------------------
+  const strategy = {
+    type: jsPsychSurveyText,
+    questions: [{ prompt: "How did you decide where the speaker's blind spot was?", name: "blind_spot_strategy", rows: 5 }],
+    data: { task: "strategy_text" },
+  };
+
+  // -------------------------------------------------------------------------
+  // 6. Age (the only demographic the original collected) and comments
   // -------------------------------------------------------------------------
   const demographics = {
     type: jsPsychSurvey,
@@ -445,7 +477,7 @@ function wirePads(root) {
   };
 
   // -------------------------------------------------------------------------
-  // 6. Debrief
+  // 7. Debrief
   // -------------------------------------------------------------------------
   const debrief = {
     type: jsPsychHtmlButtonResponse,
@@ -468,6 +500,7 @@ function wirePads(root) {
     tutorialLoop,
     trialsIntro,
     trials,
+    strategy,
     demographics,
     comments,
     debrief,

@@ -14,10 +14,10 @@ const { test, expect, devices } = require("@playwright/test");
 
 const EMULATOR = process.env.EMULATOR === "1" || !!process.env.FIRESTORE_EMULATOR_HOST;
 const PROJECT = "demo-psych251";
-const EXPERIMENT_ID = "jara-ettinger2021-phase1";
+const EXPERIMENT_ID = "jara-ettinger2021-phase2-pilot";
 const FS = `http://localhost:8080/v1/projects/${PROJECT}/databases/(default)/documents`;
 
-const QUIZ_KEY = { q1: "b", q2: "b", q3: "a", q4: "b", q5: "a", q6: "c" };
+const QUIZ_KEY = { q1: "b", q2: "b", q3: "a", q4: "b", q5: "a", q6: "c", q7: "a" };
 
 async function readTutorial(page) {
   for (let i = 0; i < 14; i++) await page.locator("#jspsych-instructions-next").click();
@@ -31,8 +31,9 @@ async function answerQuiz(page, answers) {
 }
 
 // The robot fails the comprehension check once (q2 wrong), rereads the tutorial, then passes.
-// On every trial it clicks the bottom-right corner of the left referent pad, leaves the right
-// pad untouched, and clicks the top-left corner of the blind-spot pad.
+// On every trial it clicks the bottom-right corner of the left referent pad and the top-left
+// corner of the blind-spot pad, checks that Continue is still disabled (Phase 2: every marker
+// must be moved), then clicks the top-right corner of the right referent pad.
 async function runThroughExperiment(page, { finish = true } = {}) {
   // 1. consent
   await page.getByRole("button", { name: "I agree to participate" }).click();
@@ -53,10 +54,14 @@ async function runThroughExperiment(page, { finish = true } = {}) {
     const t = page.locator(`.trial[data-model-trial="${id}"]`);
     await page.locator('.pad[data-pad="left"]').click({ position: { x: 99, y: 99 } });
     await page.locator('.pad[data-pad="cg"]').click({ position: { x: 1, y: 1 } });
+    await expect(page.getByRole("button", { name: "Continue" })).toBeDisabled();
+    await page.locator('.pad[data-pad="right"]').click({ position: { x: 99, y: 1 } });
     await page.getByRole("button", { name: "Continue" }).click();
     await t.waitFor({ state: "detached" });
   }
-  // 5. age and comments
+  // 5. strategy question (Phase 2), age and comments
+  await page.locator("textarea").fill("I looked at which words the speaker used.");
+  await page.locator("#jspsych-survey-text-next").click();
   await page.locator('input[type="number"]').fill("34");
   await page.locator('input[value="Continue"]').click();
   await page.locator("textarea").fill("Robot participant says hi.");
@@ -159,7 +164,7 @@ test.describe("experiment", () => {
       expect([0, 1]).toContain(t.left_counterbalance);
       expect([0, 1, 2, 3]).toContain(t.stim_rotation);
       expect([t.screen_lref_x, t.screen_lref_y, t.lref_touched]).toEqual([1, 1, true]);
-      expect([t.screen_rref_x, t.screen_rref_y, t.rref_touched]).toEqual([0.5, 0.5, false]);
+      expect([t.screen_rref_x, t.screen_rref_y, t.rref_touched]).toEqual([1, 0, true]);
       expect([t.screen_cg_x, t.screen_cg_y, t.cg_touched]).toEqual([0, 0, true]);
       const [scrA, scrB] = t.left_counterbalance === 1
         ? [[t.screen_lref_x, t.screen_lref_y], [t.screen_rref_x, t.screen_rref_y]]
@@ -171,6 +176,8 @@ test.describe("experiment", () => {
     }
     const demo = trials.find((t) => t.task === "demographics");
     expect(demo.response.age).toBe(34);
+    const strategy = trials.find((t) => t.task === "strategy_text");
+    expect(strategy.response.blind_spot_strategy).toBe("I looked at which words the speaker used.");
 
     // Every trial row must carry the same participant id as its participant document,
     // otherwise trials.csv and participants.csv cannot be joined in the analysis.
