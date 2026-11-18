@@ -60,3 +60,7 @@ identifiers.csv
 
 # agent worktrees
 .claude/worktrees/
+
+# preregs
+prereg-phase1.zip
+prereg-phase1

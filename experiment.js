@@ -34,7 +34,7 @@ window.TEMPLATE_VERSION = "0.1.0";
 const EXPERIMENT = {
   // Firestore path: experiments/<id>/participants/... Change it when you start a new study
   // so pilot data and real data never mix (e.g. "smith2016-pilot-a", "smith2016-final").
-  id: "jara-ettinger2021-phase2-pilot",
+  id: "jara-ettinger2021-phase2",
 
   // Trials per Firestore write. 1 = save every trial the moment it finishes (dropouts leave
   // partial data). About 25 writes per participant at 1, far inside the free tier.
